@@ -290,6 +290,16 @@ def ghash(auth_key, ghash_input):
 
     return gf_to_bytes(hash)
 
+def auth_tag(auth_key, keyblock_0, ciphertext, auth_data=b''):
+    """calculate the authentication tag"""
+
+    ghash_input = build_ghash_input(ciphertext, auth_data)
+
+    hash = ghash(auth_key, ghash_input)
+
+    return xor_bytes(hash, keyblock_0)
+
+
 class AES_GCM:
     def __init__(self, key):
         # basic aes encryption primitive, see _aes_ecb_encrypt
@@ -342,14 +352,9 @@ class AES_GCM:
         return result
 
     def _auth_tag(self, init_counter, auth_data, ciphertext):
-        """calculate the authentication tag"""
+        keyblock_0 = self._keyblock_from_counter(init_counter)
 
-        ghash_input = build_ghash_input(ciphertext, auth_data)
-
-        hash = ghash(self._auth_key, ghash_input)
-
-        keyblock = self._keyblock_from_counter(init_counter)
-        return xor_bytes(hash, keyblock)
+        return auth_tag(self._auth_key, keyblock_0, ciphertext, auth_data)
 
     def encrypt(self, iv, plaintext, auth_data=b''):
         init_counter = self._counter_from_iv(iv)
@@ -463,12 +468,6 @@ def recover_auth_secret(ciphertexts):
 
     assert f != POLY_ONE, "all ciphertexts should have the same iv"
 
-    if len(f) == 2:
-        print("early out because gcd produced a linear factor")
-        return [f[0]]
-
-    assert len(f) > 2
-
     print(f"reduced to degree {len(f) - 1}")
 
     # TODO handle the case where poly is not square-free
@@ -512,10 +511,20 @@ def recover_auth_secret(ciphertexts):
                 factors.append(poly_div(factor, gcd))
                 factors.append(gcd)
 
+    # convert monic linear polynomials into roots
+    roots = []
     for x in factors:
         assert len(x) == 2 and x[-1] == 1
+        roots.append(x[0])
 
-    return [x[0] for x in factors]
+    # each root is a potential value of the authentication key.
+    # for each one, calculate the value used to mask the auth tag.
+    results = []
+    for root in roots:
+        tag_mask = poly_eval(m_polys[0], root)
+        results.append((gf_to_bytes(root), gf_to_bytes(tag_mask)))
+
+    return results
 
 
 ############################
@@ -575,9 +584,23 @@ if __name__ == '__main__':
     recovered = recover_auth_secret([
         gcm.encrypt(iv, randbytes(100), b""),
         gcm.encrypt(iv, randbytes(100), b""),
-        #gcm.encrypt(iv, randbytes(1000), b""),
+        # gcm.encrypt(iv, randbytes(1000), b""),
     ])
 
-    assert gf_from_bytes(my_gcm._auth_key) in recovered
+    if True:
+        k = my_gcm._auth_key
+        tag_mask = my_gcm._keyblock_from_counter(my_gcm._counter_from_iv(iv))
+        assert (k, tag_mask) in recovered
 
-    print(f"possible auth secret values: {recovered}")
+    from binascii import hexlify
+
+    for auth_key, keyblock_0 in recovered:
+        ciphertext = b"fake ciphertext"
+        ciphertext += auth_tag(auth_key, keyblock_0, ciphertext)
+        try:
+            my_gcm.decrypt(iv, ciphertext)
+            print(f"auth_key == {hexlify(auth_key)}")
+            print(f"keyblock_0 == {hexlify(keyblock_0)}")
+        except ValueError:
+            print(f"auth_key != {hexlify(auth_key)}")
+            print(f"keyblock_0 != {hexlify(keyblock_0)}")
