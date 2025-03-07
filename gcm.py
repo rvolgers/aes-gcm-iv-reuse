@@ -464,6 +464,7 @@ def recover_auth_secret(ciphertexts):
     assert f != POLY_ONE, "all ciphertexts should have the same iv"
 
     if len(f) == 2:
+        print("early out because gcd produced a linear factor")
         return [f[0]]
 
     assert len(f) > 2
@@ -482,39 +483,12 @@ def recover_auth_secret(ciphertexts):
     print("performing distinct degree factorization")
     # section 20.4.1 distinct degree factorization
     # note that w,p,q are defined at the start of the chapter
-    L = []
-    h = poly_mod(POLY_X, f)
-    k = 0
-    while f != POLY_ONE:
-        h = poly_modexp(h, 1<<128, f)
-        k += 1
-        g = poly_gcd(poly_trim(poly_sub(h, POLY_X)), f)
-        if g != POLY_ONE:
-            L.append((g, k))
-            f = poly_div(f, g)
-            h = poly_mod(h, f)
+    # vastly simplified because we only care about linear factors,
+    # which are produced in the first loop iteration.
+    h = poly_modexp(POLY_X, 1<<128, f)
+    h_minus_x = poly_trim(poly_sub(h, POLY_X))
+    f = poly_gcd(h_minus_x, f)
 
-        # break immediately because we only care about linear factors
-        assert len(L) != 0, "no linear factors found"
-        print("linear factors found, stopping distinct degree factorization")
-        break
-
-    # now L consists of tuples (g, k), where g is the product of all
-    # irreducible factors of degree k.
-    # if there should happen to be a an entry of the form ([x, 1], 1),
-    # then we are done because x is equal to the authentication secret.
-    # this is actually not too uncommon for shortish ciphertexts.
-    # print("L = " + repr(L))
-
-    # should have exactly one entry with k == 1 because of the early-out
-    (f, k) = L[0]
-    assert k == 1
-
-    if len(f) == 2:
-        return [f[0]]
-
-    # r = (len(f) - 1) // k
-    # print(f"reduced to product of {r} polynomials of degree {k}")
     print(f"reduced to degree {len(f) - 1}")
 
     print("performing equal-degree factorization")
