@@ -124,8 +124,8 @@ def gf_inverse(x):
         (u1, u2, u3) = (v1, v2, v3)
         (v1, v2, v3) = (t1, t2, t3)
 
-    if v1 & (1 << 128):
-        v1 ^= GF_POLY
+        # assert u1 < (1<<128) and u2 < (1<<128) and u3 < (1<<128)
+        # assert v1 < (1<<128) and v2 < (1<<128) and v3 < (1<<128)
 
     # could've also used fermat's little theorem and gf_pow().
     # easier to understand but a lot more expensive than the above.
@@ -606,9 +606,9 @@ if __name__ == '__main__':
     from random import randbytes
 
     recovered = recover_auth_secret([
-        gcm.encrypt(iv, randbytes(10), b""),
-        gcm.encrypt(iv, randbytes(10), b""),
-        gcm.encrypt(iv, randbytes(10), b""),
+        gcm.encrypt(iv, randbytes(100), b""),
+        gcm.encrypt(iv, randbytes(100), b""),
+        # gcm.encrypt(iv, randbytes(100), b""),
     ])
 
     if True:
