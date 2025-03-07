@@ -4,3 +4,6 @@ If you pass a list of ciphertexts which were produced using the same IV to `reco
 
 Besides the authentication feature, GCM mode works like CTR mode or other stream ciphers, meaning flipping a bit in the ciphertext will flip the corresponding bit in the plaintext.
 
+Since this is pure Python it's not very efficient. It works fine for ciphertexts that are up a few kilobytes, but above that it will take quite long.
+
+The minimum number of ciphertexts with the same IV that you need is 2, but if you can get 3 it helps a lot. More than that isn't likely to matter.
