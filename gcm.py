@@ -1,7 +1,15 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # only used for a basic AES-ECB primitive
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+from random import getrandbits
+
+
+##############################################
+# code for operating on numbers in GF(2^128) #
+##############################################
+
 
 # GF(2^128) with polynomial x^128 + x^7 + x^2 + x + 1
 GF_POLY = (1 << 128) | (1 << 7) | (1 << 2) | (1 << 1) | 1
@@ -101,6 +109,12 @@ def gf_inverse(x):
 
     return u1
 
+
+################################################################
+# code for operating on polynomials over numbers in GF(2**128) #
+################################################################
+
+
 # the polynomial f(x) = 0
 POLY_ZERO = []
 
@@ -135,18 +149,24 @@ def poly_add(f, g):
 
 poly_sub = poly_add
 
+# lc_g_inv means "inverse of the leading coefficient of g".
+# if you already have it, passing it in saves some work.
 def poly_divmod(f, g, lc_g_inv = None):
 
     assert g != POLY_ZERO, "cannot divide by zero"
-    assert g[-1] != 0, "g is not trimmed"
-    assert f == POLY_ZERO or f[-1] != 0, "f is not trimmed"
 
-    if lc_g_inv is None:
-        lc_g_inv = gf_inverse(g[-1])
+    if f == POLY_ZERO:
+        return (POLY_ZERO, POLY_ZERO)
+
+    assert g[-1] != 0, "g is not trimmed"
+    assert f[-1] != 0, "f is not trimmed"
 
     qdigits = len(f) - len(g) + 1
     if qdigits <= 0:
-        return (0, f)
+        return (POLY_ZERO, f)
+
+    if lc_g_inv is None:
+        lc_g_inv = gf_inverse(g[-1])
 
     q = [0] * qdigits
     r = f[:]
@@ -208,6 +228,9 @@ def poly_square(f):
     return result
 
 def poly_modexp(f, e, g):
+    # simple exponentation-by-squaring
+
+    # we need this often, so might as well precalculate it
     lc_g_inv = gf_inverse(g[-1])
 
     prod = POLY_ONE
@@ -225,6 +248,12 @@ def poly_modexp(f, e, g):
 
 def poly_formal_derivative(f):
     return [gf_mul(c, e) for e, c in enumerate(f)][1:]
+
+
+##########################
+# AES GCM implementation #
+##########################
+
 
 def split_blocks(data):
     return [data[i:i+16] for i in range(0, len(data), 16)]
@@ -248,7 +277,7 @@ def build_ghash_input(ciphertext, auth_data=b''):
     return data
 
 def ghash(auth_key, ghash_input):
-    """implements the GHASH function from the spec"""
+    """implements the GHASH function from the AES GCM spec"""
 
     k = gf_from_bytes(auth_key)
 
@@ -349,6 +378,176 @@ class AES_GCM:
         return plaintext
 
 
+######################################################################
+# code for recovering the auth key from ciphertexts with the same iv #
+######################################################################
+
+
+def ghash_polynomial(data):
+    # performs the same operation as ghash(), but since the authentication
+    # key is unknown, it returns the result as a polynomial with the
+    # authentication key as the variable.
+
+    # rewriting the calculation as done by ghash to standard form:
+    # here, '+' is xor, '*' is gf_mul, and '^' means exponentiation.
+    # ((((block0 * k) + block1) * k) + block2) * k
+    # ((block0 * k) + block1) * k^2 + block2*k
+    # block0*k^3 + block1*k^2 + block2*k
+    # block0*k^3 + block1*k^2 + block2*k^1 + 0*k^0
+
+    # because everything is multiplied with auth_key at least once,
+    # the least significant term is zero.
+    poly = [0]
+
+    # we store the polynomial with least significant terms first, because:
+    # * it means list indexes are equal to the exponent for that term
+    # * we can use len() to determine the order of the polynomial
+    for block in reversed(split_blocks(data)):
+        poly.append(gf_from_bytes(block))
+
+    return poly
+
+def ciphertext_to_masked_polynomial(ciphertext, auth_data=b''):
+    """
+    This does not produce a polynomial suitable for solving yet,
+    because the tag in the least significant coefficient is still
+    xor'ed with a secret masking value.
+
+    But if you xor such a polynomial with another one produced with
+    the same iv, this secret masking value will be canceled out and
+    the resulting polynomial will equal 0 when evaluated with the
+    correct authentication secret.
+    """
+    ciphertext, tag = ciphertext[:-16], ciphertext[-16:]
+
+    poly = ghash_polynomial(build_ghash_input(ciphertext, auth_data))
+
+    # logically this is xor, but we know poly[0] == 0
+    poly[0] = gf_from_bytes(tag)
+
+    return poly
+
+def recover_auth_secret(ciphertexts):
+
+    ciphertexts = set(ciphertexts)
+
+    assert len(ciphertexts) > 1, "need at least two distinct ciphertexts"
+
+    print(f"parsing {len(ciphertexts)} distinct ciphertexts")
+
+    # parse ciphertexts to masked polynomials
+    m_polys = [ciphertext_to_masked_polynomial(c) for c in ciphertexts]
+
+    # shorter is better.
+    # don't lengthen short polynomials by xoring them with long ones.
+    m_polys.sort(key=len)
+
+    print(f"min/max degree: {len(m_polys[0])-1}..{len(m_polys[-1])-1}")
+
+    # unmask each polynomial by xor'ing it with another one
+    polys = [poly_sub(f, g) for f, g in zip(m_polys, m_polys[1:])]
+
+    print(f"reducing via gcd")
+
+    # take gcd of all polynomials.
+    # makes good use of many ciphertexts, and also helps a lot to reduce
+    # the work for long ciphertexts, assuming we have at least three.
+    f = poly_monic(polys[0])
+    for g in polys[1:]:
+        if len(f) <= 2:
+            break
+        f = poly_gcd(f, g)
+
+    # poly_gcd does this for us
+    assert f == poly_monic(f)
+
+    assert f != POLY_ONE, "all ciphertexts should have the same iv"
+
+    if len(f) == 2:
+        return [f[0]]
+
+    assert len(f) > 2
+
+    print(f"reduced to degree {len(f) - 1}")
+
+    # TODO handle the case where poly is not square-free
+    # this does not appear to ever trigger in practice.
+    c = poly_gcd(f, poly_formal_derivative(f))
+    assert c == POLY_ONE, "polynomial is not square-free"
+
+    # A Computational Introduction to Number Theory and Algebra (v2.5)
+    # by Victor Shoup
+    # https://www.shoup.net/ntb/ntb-v2_5.pdf
+
+    print("performing distinct degree factorization")
+    # section 20.4.1 distinct degree factorization
+    # note that w,p,q are defined at the start of the chapter
+    L = []
+    h = poly_mod(POLY_X, f)
+    k = 0
+    while f != POLY_ONE:
+        h = poly_modexp(h, 1<<128, f)
+        k += 1
+        g = poly_gcd(poly_trim(poly_sub(h, POLY_X)), f)
+        if g != POLY_ONE:
+            L.append((g, k))
+            f = poly_div(f, g)
+            h = poly_mod(h, f)
+
+        # break immediately because we only care about linear factors
+        assert len(L) != 0, "no linear factors found"
+        print("linear factors found, stopping distinct degree factorization")
+        break
+
+    # now L consists of tuples (g, k), where g is the product of all
+    # irreducible factors of degree k.
+    # if there should happen to be a an entry of the form ([x, 1], 1),
+    # then we are done because x is equal to the authentication secret.
+    # this is actually not too uncommon for shortish ciphertexts.
+    print("L = " + repr(L))
+
+    # should have exactly one entry with k == 1 because of the early-out
+    (f, k) = L[0]
+    assert k == 1
+
+    if len(f) == 2:
+        return [f[0]]
+
+    # r = (len(f) - 1) // k
+    # print(f"reduced to product of {r} polynomials of degree {k}")
+    print(f"reduced to degree {len(f) - 1}")
+
+    print("performing equal-degree factorization")
+
+    # equal degree factorization, specialized for degree 1
+    # https://github.com/frereit/frereit.github.io/blob/main/wasm/cantor-zassenhaus/src/factorize.rs
+    factors = [f]
+    while len(factors) != len(f) - 1:
+        rand = [getrandbits(128) for i in range(len(f) - 1)]
+        g = poly_modexp(rand, (1<<128) // 3, f)
+
+        # (skipped code that does nothing for degree == 1)
+
+        todo = [h for h in factors if len(h) > 2]
+        for factor in todo:
+            gcd = poly_gcd(factor, poly_trim(poly_add(g, POLY_ONE)))
+            if len(gcd) > 1 and len(gcd) < len(factor):
+                factors.remove(factor)
+                factors.append(poly_div(factor, gcd))
+                factors.append(gcd)
+                break
+
+    for x in factors:
+        assert len(x) == 2 and x[-1] == 1
+
+    return [x[0] for x in factors]
+
+
+############################
+# testing and example junk #
+############################
+
+
 if __name__ == '__main__':
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -369,233 +568,6 @@ if __name__ == '__main__':
     plaintext = my_gcm.decrypt(iv, ciphertext)
 
     assert plaintext == orig
-
-    def ghash_polynomial(data):
-        # performs the same operation as ghash(), but since the authentication
-        # key is unknown, it returns the result as a polynomial with the
-        # authentication key as the variable.
-
-        # rewriting the calculation as done by ghash to standard form:
-        # here, '+' is xor, '*' is gf_mul, and '^' means exponentiation.
-        # ((((block0 * k) + block1) * k) + block2) * k
-        # ((block0 * k) + block1) * k^2 + block2*k
-        # block0*k^3 + block1*k^2 + block2*k
-        # block0*k^3 + block1*k^2 + block2*k^1 + 0*k^0
-
-        # because everything is multiplied with auth_key at least once,
-        # the least significant term is zero.
-        poly = [0]
-
-        # we store the polynomial with least significant terms first, because:
-        # * it means list indexes are equal to the exponent for that term
-        # * we can use len() to determine the order of the polynomial
-        for block in reversed(split_blocks(data)):
-            poly.append(gf_from_bytes(block))
-
-        return poly
-
-    def ciphertext_to_masked_polynomial(ciphertext, auth_data=b''):
-        """
-        This does not produce a polynomial suitable for solving yet,
-        because the tag in the least significant coefficient is still
-        xor'ed with a secret masking value.
-
-        But if you xor such a polynomial with another one produced with
-        the same iv, this secret masking value will be canceled out and
-        the resulting polynomial will equal 0 when evaluated with the
-        correct authentication secret.
-        """
-        ciphertext, tag = ciphertext[:-16], ciphertext[-16:]
-
-        poly = ghash_polynomial(build_ghash_input(ciphertext, auth_data))
-
-        # logically this is xor, but we know poly[0] == 0
-        poly[0] = gf_from_bytes(tag)
-
-        return poly
-
-    from random import getrandbits
-
-    # https://github.com/frereit/frereit.github.io/blob/main/wasm/cantor-zassenhaus/src/factorize.rs
-    def equal_degree_factorize(f, degree):
-        factors = [f]
-        while len(factors) != (len(f) - 1) / degree:
-            rand = [getrandbits(128) for i in range(len(f) - 1)]
-
-            # 0x5555_5555_5555_5555_5555_5555_5555_5555 = (2^128)/3.
-            g = poly_modexp(rand, 0x5555_5555_5555_5555_5555_5555_5555_5555, f)
-
-            # note that this code does nothing for degree == 1
-            r_pow_p_minus_1_div_3 = g[:]
-            for i in range(1, degree):
-                g = poly_modexp(g, 1<<128, f)
-                g = poly_mod(poly_mul(g, r_pow_p_minus_1_div_3), f)
-
-            for factor in [f for f in factors if len(f) - 1 != degree]:
-                gcd = poly_gcd(factor, poly_trim(poly_add(g, POLY_ONE)))
-                if len(gcd) > 1 and len(gcd) < len(factor):
-                    factors.remove(factor)
-                    factors.append(poly_div(factor, gcd))
-                    factors.append(gcd)
-                    break
-        return factors
-
-    def recover_auth_secret(ciphertexts):
-
-        ciphertexts = set(ciphertexts)
-
-        assert len(ciphertexts) > 1, "need at least two distinct ciphertexts"
-
-        print(f"parsing {len(ciphertexts)} distinct ciphertexts")
-
-        # parse ciphertexts to masked polynomials
-        m_polys = [ciphertext_to_masked_polynomial(c) for c in ciphertexts]
-
-        # shorter is better.
-        # don't lengthen short polynomials by xoring them with long ones.
-        m_polys.sort(key=len)
-
-        print(f"min/max degree: {len(m_polys[0])-1}..{len(m_polys[-1])-1}")
-
-        # unmask each polynomial by xor'ing it with another one
-        polys = [poly_sub(f, g) for f, g in zip(m_polys, m_polys[1:])]
-
-        print(f"reducing via gcd")
-
-        # take gcd of all polynomials.
-        # makes good use of many ciphertexts, and also helps a lot to reduce
-        # the work for long ciphertexts, assuming we have at least three.
-        f = poly_monic(polys[0])
-        for g in polys[1:]:
-            if len(f) <= 2:
-                break
-            f = poly_gcd(f, g)
-
-        # poly_gcd does this for us
-        assert f == poly_monic(f)
-
-        assert f != POLY_ONE, "all ciphertexts should have the same iv"
-
-        if len(f) == 2:
-            return [f[0]]
-
-        assert len(f) > 2
-
-        print(f"reduced to degree {len(f) - 1}")
-
-        # TODO handle the case where poly is not square-free
-        c = poly_gcd(f, poly_formal_derivative(f))
-        assert c == POLY_ONE, "polynomial is not square-free"
-
-        # A Computational Introduction to Number Theory and Algebra (v2.5)
-        # by Victor Shoup
-        # https://www.shoup.net/ntb/ntb-v2_5.pdf
-
-        # preliminary definitions at start of chapter 20
-        w = 128
-        p = 2
-        q = p**w
-
-        print("performing distinct degree factorization")
-        # section 20.4.1 distinct degree factorization
-        L = []
-        h = poly_mod(POLY_X, f)
-        k = 0
-        while f != POLY_ONE:
-            h = poly_modexp(h, q, f)
-            k += 1
-            g = poly_gcd(poly_trim(poly_sub(h, POLY_X)), f)
-            if g != POLY_ONE:
-                L.append((g, k))
-                f = poly_div(f, g)
-                h = poly_mod(h, f)
-
-            # break immediately because we only care about linear factors
-            assert len(L) != 0, "no linear factors found"
-            print("linear factors found, stopping distinct degree factorization")
-            break
-
-        # now L consists of tuples (g, k), where g is the product of all
-        # irreducible factors of degree k.
-        # if there should happen to be a an entry of the form ([x, 1], 1),
-        # then we are done because x is equal to the authentication secret.
-        # this is actually not too uncommon for shortish ciphertexts.
-        print("L = " + repr(L))
-
-        # should have exactly one entry with k == 1 because of the early-out
-        (f, k) = L[0]
-        assert k == 1
-
-        if len(f) == 2:
-            return [f[0]]
-
-        r = (len(f) - 1) // k
-        #print(f"reduced to product of {r} polynomials of degree {k}")
-        print(f"reduced to degree {len(f) - 1}")
-
-        print("performing equal-degree factorization")
-
-        # section 20.4.2 Equal degree factorization
-
-        result = equal_degree_factorize(f, 1)
-        for x in result:
-            assert len(x) == 2 and x[-1] == 1
-
-        return [x[0] for x in result]
-
-
-        # # produce the polynomial M_k
-        # M_k = POLY_ZERO
-        # lc_f_inv = gf_inverse(f[-1])  # introduced as optimization
-        # square = poly_mod(POLY_X, f, lc_f_inv)  # introduced as optimization
-        # for j in range(0, w * k - 1):
-        #     # check optimized version against original formulation
-        #     # assert square == poly_modexp(POLY_X, 2**j, f)
-        #     M_k = poly_add(M_k, square)
-        #     square = poly_mod(poly_mul(square, square), f, lc_f_inv)
-        # assert M_k == poly_mod(M_k, f, lc_f_inv)
-
-        # H = set()
-        # H.add(tuple(f))
-        # while len(H) < r:
-        #     HH = set()
-        #     for h in H:
-        #         # choose alpha from F[X]/(h) at random
-        #         # TODO
-        #         alpha = ...
-
-        #         # return canonical representative of M_k(alpha) in R[X]/(f)
-        #         # (rep() is defined in the "Index of notation" in the book)
-        #         # TODO
-        #         candidate = ...
-
-        #         d = poly_gcd(h, candidate)
-        #         if d == POLY_ONE or d == h:
-        #             HH.add(tuple(h))
-        #         else:
-        #             HH.add(tuple(d))
-        #             HH.add(tuple(poly_div(h, d)))
-        #     H = HH
-
-        # p. 187 (7.3 ideals and quotient rings)
-
-        # [a]_I
-        #   means "the coset of I containing a"
-        #   defined by {a + x : x in I}
-        #   a in R, I is an additive subgroup of R
-
-        # R/I
-        #   means "the quotient ring or residue class ring of R modulo I"
-        #   elements are called "residue classes"
-        # addition in R/I is defined in terms of coset representatives:
-        # [a]_I + [b]_I == [a + b]_I
-        #
-        # multiplication too:
-        # [a]_I * [b]_I = [ab]_I
-
-
-
-
 
     if True:
         poly1 = ghash_polynomial(build_ghash_input(ciphertext[:-16]))
@@ -624,7 +596,6 @@ if __name__ == '__main__':
     poly = poly_gcd(poly, poly2)
 
     from random import randbytes
-
 
     recovered = recover_auth_secret([
         gcm.encrypt(iv, randbytes(100), b""),
