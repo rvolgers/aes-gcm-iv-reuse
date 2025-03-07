@@ -332,21 +332,19 @@ def auth_tag(auth_key, keyblock_0, ciphertext, auth_data=b''):
 
 
 class AES_GCM:
-    def __init__(self, key):
+    """
+    AES-GCM implementation intended to be easy to understand and to make
+    it easy to do something you should never do: reuse the same IV for
+    multiple encryptions.
+    """
+
+    def __init__(self, key, iv):
         # basic aes encryption primitive, see _aes_ecb_encrypt
         self._aes_ecb = Cipher(algorithms.AES(key), modes.ECB())
 
         # the secret used in the ghash function.
         self._auth_key = self._aes_ecb_encrypt(b'\x00' * 16)
 
-        print("auth key: " + hex(gf_from_bytes(self._auth_key)))
-        print("auth key (decimal): " + str(gf_from_bytes(self._auth_key)))
-
-    def _aes_ecb_encrypt(self, data):
-        encryptor = self._aes_ecb.encryptor()
-        return encryptor.update(data) + encryptor.finalize()
-
-    def _counter_from_iv(self, iv):
         # if the length of the passed iv is not 12 it is passed through the
         # ghash function and the resulting 128 bit value is *directly* used
         # as the initial value of the counter.
@@ -356,60 +354,63 @@ class AES_GCM:
             # however most implementations impose limits similar to this.
             assert 8 <= len(iv) <= 128
             hash = ghash(self._auth_key, build_ghash_input(iv))
-            return int.from_bytes(hash, byteorder='big')
+            init_counter = int.from_bytes(hash, byteorder='big')
+        else:
+            # if the iv is exactly 12 bytes it is used as the upper 96 bits
+            # of the counter. the lower bits are left zero except for the +1.
+            # the +1 here is presumably to prevent an all-zero iv from
+            # resulting in _auth_key being equal to the auth tag keyblock?
+            init_counter = (int.from_bytes(iv, byteorder='big') << 32) + 1
 
-        # if the iv is exactly 12 bytes it is used as the upper 96 bits
-        # of the counter. the lower bits are left zero except for the +1.
-        # the +1 here is presumably to prevent an all-zero iv from resulting
-        # in self._auth_key being equal to the auth tag keyblock?
-        return (int.from_bytes(iv, byteorder='big') << 32) + 1
+        self._init_counter = init_counter
 
-    def _keyblock_from_counter(self, counter):
+        print("auth key (decimal): " + str(gf_from_bytes(self._auth_key)))
+
+    def _aes_ecb_encrypt(self, data):
+        assert len(data) == 16
+        encryptor = self._aes_ecb.encryptor()
+        return encryptor.update(data) + encryptor.finalize()
+
+    def _keyblock(self, i):
+        counter = self._init_counter + i
         bcounter = counter.to_bytes(length=16, byteorder='big')
         return self._aes_ecb_encrypt(bcounter)
 
-    def _crypt_common(self, init_counter, data):
+    def _crypt_common(self, data):
         """implements CTR mode encryption and decryption"""
 
-        # +1 because the first one is reserved for masking the auth tag
-        counter = init_counter + 1
-
         result = b''
-        for block in split_blocks(data):
-            keyblock = self._keyblock_from_counter(counter)
+        for i, block in enumerate(split_blocks(data)):
+            # +1 because the first keyblock is reserved for the auth tag
+            keyblock = self._keyblock(i + 1)
             result += xor_bytes(keyblock[:len(block)], block)
-            counter += 1
 
         return result
 
-    def _auth_tag(self, init_counter, auth_data, ciphertext):
-        keyblock_0 = self._keyblock_from_counter(init_counter)
+    def _auth_tag(self, ciphertext, auth_data=b''):
+        keyblock_0 = self._keyblock(0)
 
         return auth_tag(self._auth_key, keyblock_0, ciphertext, auth_data)
 
-    def encrypt(self, iv, plaintext, auth_data=b''):
-        init_counter = self._counter_from_iv(iv)
-
-        ciphertext = self._crypt_common(init_counter, plaintext)
+    def encrypt(self, plaintext, auth_data=b''):
+        ciphertext = self._crypt_common(plaintext)
         assert len(ciphertext) == len(plaintext)
 
-        auth_tag = self._auth_tag(init_counter, auth_data, ciphertext)
+        auth_tag = self._auth_tag(ciphertext, auth_data)
 
         return ciphertext + auth_tag
 
-    def decrypt(self, iv, ciphertext, auth_data=b''):
-        init_counter = self._counter_from_iv(iv)
-
+    def decrypt(self, ciphertext, auth_data=b''):
         # last 16 bytes of ciphertext are auth tag, split it off
         assert len(ciphertext) >= 16
         ciphertext, ciphertext_auth_tag = ciphertext[:-16], ciphertext[-16:]
 
-        good_auth_tag = self._auth_tag(init_counter, auth_data, ciphertext)
+        good_auth_tag = self._auth_tag(ciphertext, auth_data)
 
         if ciphertext_auth_tag != good_auth_tag:
             raise ValueError("invalid tag")
 
-        plaintext = self._crypt_common(init_counter, ciphertext)
+        plaintext = self._crypt_common(ciphertext)
 
         return plaintext
 
@@ -579,8 +580,8 @@ if __name__ == '__main__':
 
     assert orig == gcm.decrypt(iv, ciphertext, b"")
 
-    my_gcm = AES_GCM(key)
-    plaintext = my_gcm.decrypt(iv, ciphertext)
+    my_gcm = AES_GCM(key, iv)
+    plaintext = my_gcm.decrypt(ciphertext)
 
     assert plaintext == orig
 
@@ -620,7 +621,7 @@ if __name__ == '__main__':
 
     if True:
         k = my_gcm._auth_key
-        tag_mask = my_gcm._keyblock_from_counter(my_gcm._counter_from_iv(iv))
+        tag_mask = my_gcm._keyblock(0)
         assert (k, tag_mask) in recovered
 
     from binascii import hexlify
@@ -629,7 +630,7 @@ if __name__ == '__main__':
         ciphertext = b"fake ciphertext"
         ciphertext += auth_tag(auth_key, keyblock_0, ciphertext)
         try:
-            my_gcm.decrypt(iv, ciphertext)
+            my_gcm.decrypt(ciphertext)
             print(f"auth_key == {hexlify(auth_key)}")
             print(f"keyblock_0 == {hexlify(keyblock_0)}")
         except ValueError:
