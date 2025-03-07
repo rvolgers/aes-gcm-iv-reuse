@@ -82,32 +82,56 @@ def gf_pow(x, e):
 
     return prod
 
+# for testing only. same as gf_mul but without the reduction step.
+def gf_mul_noreduce(x, y):
+    result = 0
+    while True:
+        if y & 1:
+            result ^= x
+
+        y >>= 1
+        if y == 0:
+            break
+
+        x <<= 1
+
+    return result
+
 def gf_inverse(x):
     assert x != 0, "zero has no inverse"
 
     # inverse by extended euclidean algorithm.
     # https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Computing_multiplicative_inverses_in_modular_structures
     # https://crypto.stackexchange.com/questions/12956/multiplicative-inverse-in-operatornamegf28/12962#12962
-    (u1, u3) = (0, GF_POLY)
-    (v1, v3) = (1, x)
+    # https://crypto.stackexchange.com/a/83544
+    (u1, u2, u3) = (0, 1, GF_POLY)
+    (v1, v2, v3) = (1, 0, x)
 
-    while v3 != 0:
-        (t1, t3) = (u1, u3)
+    # notice that the GF_POLY term of the invariant is zero modulo GF_POLY.
+    # so we exit once we have v1 such that gf_mul(x, v1) == 1,
+    # which means v1 is the inverse of x modulo GF_POLY.
+    while v3 != 1:
+        # loop invariant
+        # assert gf_mul_noreduce(x, u1) ^ gf_mul_noreduce(GF_POLY, u2) == u3
+        # assert gf_mul_noreduce(x, v1) ^ gf_mul_noreduce(GF_POLY, v2) == v3
+
+        (t1, t2, t3) = (u1, u2, u3)
         q = u3.bit_length() - v3.bit_length()
         if q >= 0:
             t1 ^= v1 << q
+            t2 ^= v2 << q
             t3 ^= v3 << q
-        (u1, u3) = (v1, v3)
-        (v1, v3) = (t1, t3)
+        (u1, u2, u3) = (v1, v2, v3)
+        (v1, v2, v3) = (t1, t2, t3)
 
-    if u1 & (1 << 128):
-        u1 ^= GF_POLY
+    if v1 & (1 << 128):
+        v1 ^= GF_POLY
 
     # could've also used fermat's little theorem and gf_pow().
     # easier to understand but a lot more expensive than the above.
-    # assert u1 == gf_pow(x, (1<<128) - 2)
+    # assert v1 == gf_pow(x, (1<<128) - 2)
 
-    return u1
+    return v1
 
 
 ################################################################
@@ -582,9 +606,9 @@ if __name__ == '__main__':
     from random import randbytes
 
     recovered = recover_auth_secret([
-        gcm.encrypt(iv, randbytes(100), b""),
-        gcm.encrypt(iv, randbytes(100), b""),
-        # gcm.encrypt(iv, randbytes(1000), b""),
+        gcm.encrypt(iv, randbytes(10), b""),
+        gcm.encrypt(iv, randbytes(10), b""),
+        gcm.encrypt(iv, randbytes(10), b""),
     ])
 
     if True:
