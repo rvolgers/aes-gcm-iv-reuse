@@ -4,7 +4,7 @@
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from random import getrandbits
-
+from time import time
 
 ##############################################
 # code for operating on numbers in GF(2^128) #
@@ -504,7 +504,7 @@ def recover_auth_secret(ciphertexts):
     # if there should happen to be a an entry of the form ([x, 1], 1),
     # then we are done because x is equal to the authentication secret.
     # this is actually not too uncommon for shortish ciphertexts.
-    print("L = " + repr(L))
+    # print("L = " + repr(L))
 
     # should have exactly one entry with k == 1 because of the early-out
     (f, k) = L[0]
@@ -528,14 +528,15 @@ def recover_auth_secret(ciphertexts):
 
         # (skipped code that does nothing for degree == 1)
 
+        g_plus_one = poly_trim(poly_add(g, POLY_ONE))
+
         todo = [h for h in factors if len(h) > 2]
         for factor in todo:
-            gcd = poly_gcd(factor, poly_trim(poly_add(g, POLY_ONE)))
+            gcd = poly_gcd(factor, g_plus_one)
             if len(gcd) > 1 and len(gcd) < len(factor):
                 factors.remove(factor)
                 factors.append(poly_div(factor, gcd))
                 factors.append(gcd)
-                break
 
     for x in factors:
         assert len(x) == 2 and x[-1] == 1
@@ -603,4 +604,6 @@ if __name__ == '__main__':
         #gcm.encrypt(iv, randbytes(1000), b""),
     ])
 
-    print(f"recovered auth secret: {recovered}")
+    assert gf_from_bytes(my_gcm._auth_key) in recovered
+
+    print(f"possible auth secret values: {recovered}")
