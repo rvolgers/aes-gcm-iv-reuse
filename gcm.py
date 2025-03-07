@@ -124,8 +124,13 @@ def gf_inverse(x):
         (u1, u2, u3) = (v1, v2, v3)
         (v1, v2, v3) = (t1, t2, t3)
 
+        # after the first loop iteration we should be within 128 bits again
         # assert u1 < (1<<128) and u2 < (1<<128) and u3 < (1<<128)
         # assert v1 < (1<<128) and v2 < (1<<128) and v3 < (1<<128)
+
+        # so now we can express the loop invariant modulo GF_POLY
+        # assert gf_mul(x, u1) == u3
+        # assert gf_mul(x, v1) == v3
 
     # could've also used fermat's little theorem and gf_pow().
     # easier to understand but a lot more expensive than the above.
