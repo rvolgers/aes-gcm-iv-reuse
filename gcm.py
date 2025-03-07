@@ -110,6 +110,8 @@ def gf_inverse(x):
     # notice that the GF_POLY term of the invariant is zero modulo GF_POLY.
     # so we exit once we have v1 such that gf_mul(x, v1) == 1,
     # which means v1 is the inverse of x modulo GF_POLY.
+    # note that v3 is actually the gcd of GF_POLY and x.
+    # we know it will always be 1, because GF_POLY is irreducible.
     while v3 != 1:
         # loop invariant
         # assert gf_mul_noreduce(x, u1) ^ gf_mul_noreduce(GF_POLY, u2) == u3
