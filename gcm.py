@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 # only used for a basic AES-ECB primitive
+from collections import Counter
+from copy import deepcopy
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from random import getrandbits
@@ -38,7 +40,104 @@ def gf_to_bytes(x):
     assert x < (1 << 128), "element not properly reduced"
     return _gf_bitswap(x).to_bytes(length=16, byteorder='little')
 
+# non-reducing version of gf_mul, used for experimentation
+def gf_mul_noreduce(x, y):
+    result = 0
+    while True:
+        if y & 1:
+            result ^= x
+
+        y >>= 1
+        if y == 0:
+            break
+
+        x <<= 1
+
+    return result
+
+ALL64 = (1 << 64) - 1
+ALL128 = (1 << 128) - 1
+
+# https://web.archive.org/web/20190806061845/https://software.intel.com/sites/default/files/managed/72/cc/clmul-wp-rev-2.02-2014-04-20.pdf
+# this shows how to perform the modular reduction step in a cpu friendly way
+def gf_mul_intrinsic(x, y):
+
+    # Algorithm 2
+
+    A0 = x & ALL64
+    A1 = (x >> 64) & ALL64
+
+    B0 = y & ALL64
+    B1 = (y >> 64) & ALL64
+
+    if False:
+        # one fewer clmul, at the expense of a lot of shuffling
+        # these are all 64 x 64 -> 128 carryless multiplications
+        C = gf_mul_noreduce(A1, B1)
+        D = gf_mul_noreduce(A0, B0)
+        E = gf_mul_noreduce(A0 ^ A1, B0 ^ B1)
+        E0 = E & ALL64
+        E1 = (E >> 64) & ALL64
+
+        tmp = (C << 128) ^ (C << 64) ^ (D << 64) ^ D ^ (E1 << 128) ^ (E0 << 64)
+    else:
+        # simple implementation with an extra clmul
+        # these are all 64 x 64 -> 128 carryless multiplications
+        tmp = (
+            (gf_mul_noreduce(A1, B1) << 128) ^
+            ((gf_mul_noreduce(A1, B0) ^ gf_mul_noreduce(A0, B1)) << 64) ^
+            gf_mul_noreduce(A0, B0)
+        )
+
+    # Algorithm 4
+
+    if False:
+        X0 = tmp & ALL64
+        tmp >>= 64
+        X1 = tmp & ALL64
+        tmp >>= 64
+        X2 = tmp & ALL64
+        tmp >>= 64
+        X3 = tmp & ALL64
+
+        X01 = (X1 << 64) | X0
+
+        A = X3 >> 63
+        B = X3 >> 62
+        C = X3 >> 57
+
+        D = X2 ^ A ^ B ^ C
+
+        X3D = (X3 << 64) | D
+
+        E = (X3D << 1) & ALL128
+        F = (X3D << 2) & ALL128
+        G = (X3D << 7) & ALL128
+
+        H = X3D ^ E ^ F ^ G
+
+        return X01 ^ H
+    else:
+        X01 = tmp & ALL128
+        X23 = (tmp >> 128) & ALL128
+
+        A = X23 >> (63 + 64)
+        B = X23 >> (62 + 64)
+        C = X23 >> (57 + 64)
+
+        X3D = X23 ^ A ^ B ^ C
+
+        E = (X3D << 1) & ALL128
+        F = (X3D << 2) & ALL128
+        G = (X3D << 7) & ALL128
+
+        H = X3D ^ E ^ F ^ G
+
+        return X01 ^ H
+
 def gf_mul(x, y):
+    # tmp = gf_mul_intrinsic(x,y)
+
     # galois field multiplication aka carryless multiplication.
     # this really is just schoolbook multiplication without carries,
     # though the code is reorganized to be able to efficiently use
@@ -64,6 +163,8 @@ def gf_mul(x, y):
         x <<= 1
         if x & (1 << 128):
             x ^= GF_POLY
+
+    # assert result == tmp
 
     return result
 
@@ -214,6 +315,249 @@ def poly_divmod(f, g, lc_g_inv = None):
     # assert r[-qdigits:] == [0] * qdigits
 
     return (q, poly_trim(r[:-qdigits]))
+
+if True:
+
+    # all values are in sum-of-products form
+    def prod_to_str(p):
+        # return ' * '.join(f if e == 1 else f"{f}**{e}" for f,e in sorted(Counter(p).items()))
+        return ' * '.join(f for f in p)
+    def sym_to_str(s):
+        terms = [prod_to_str(p) for p in s if not ('0' in p)]
+        # terms = [f"{t} * {m}" if m > 1 else t for t, m in sorted(Counter(terms).items())]
+        return ' + '.join(terms)
+    def sym_mul_const(val, const):
+        return [p + [const] for p in val]
+    f = [[[f"0"]] for i in range(14)]
+    f[-1] = [["lc(f)"]]
+    g = [[[f"g{i}"]] for i in range(4)]
+    g[-1] = [["lc(g)"]]
+    qdigits = len(f) - len(g) + 1
+    r = f[:]
+    n = 0
+    digits = []
+    for i in reversed(range(len(f))):
+        lc = r[i]
+        digit = sym_mul_const(lc, 'lc_g_inv')
+        digits.append(digit)
+        if True:
+            digit = [[f'digit_{n}']]
+        # r[i] = [['0']]
+        for j in reversed(range(len(g))):
+            if i - len(g) + 1 + j < 0: break
+            r[i - len(g) + 1 + j] = deepcopy(r[i - len(g) + 1 + j]) + sym_mul_const(deepcopy(digit), f'g[{j}]')
+        n += 1
+
+    for i, t in enumerate(digits):
+        prefix = f"digit_{i} = ("
+        indent = " " * len(prefix)
+        print(prefix + sym_to_str(t).replace(' + ', ' +\n' + indent) + ')')
+    '''
+    # to make ide shut up
+    lc_g_inv = None
+    gg = []
+
+    # gg[x] = g[x] * lc_g_inv
+    digit_0 = (lc(f) * lc_g_inv)
+    digit_1 = (digit_0 * gg[2])
+    digit_2 = (digit_0 * gg[1] +
+               digit_1 * gg[2])
+    digit_3 = (digit_0 * gg[0] +
+               digit_1 * gg[1] +
+               digit_2 * gg[2])
+    digit_4 = (digit_1 * gg[0] +
+               digit_2 * gg[1] +
+               digit_3 * gg[2])
+    
+    digit_3 = (digit_0 * gg[0] +
+               (digit_0 * gg[2]) * gg[1] +
+               (digit_0 * gg[1] + (digit_0 * gg[2]) * gg[2]) * gg[2])
+    digit_3 = (digit_0 * gg[0] +
+               digit_0 * gg[2] * gg[1] +
+               digit_0 * gg[1] * gg[2] + digit_0 * gg[2] * gg[2] * gg[2])
+    digit_3 = (gg[0] +
+               gg[2] * gg[1] +
+               gg[1] * gg[2] +
+               gg[2] * gg[2] * gg[2]) * digit_0
+    digit_3 = (gg[0] + gg[2]*gg[2]*gg[2]) * digit_0
+
+
+    # recursively substitute to depend only on digit_0
+    digit_4 = ((digit_0 * gg[2]) * gg[0] +
+               (digit_0 * gg[1] + (digit_0 * gg[2]) * gg[2]) * gg[1] +
+               (digit_0 * gg[0] + (digit_0 * gg[2]) * gg[1] + (digit_0 * gg[1] + (digit_0 * gg[2]) * gg[2]) * gg[2]) * gg[2])
+    # flatten a bit
+    digit_4 = ((digit_0 * gg[2]) * gg[0] +
+               (digit_0 * gg[1] + digit_0 * gg[2] * gg[2]) * gg[1] +
+               (digit_0 * gg[0] + digit_0 * gg[2] * gg[1] + digit_0 * gg[1] * gg[2] + digit_0 * gg[2] * gg[2] * gg[2]) * gg[2])
+    # pull out digit_0
+    digit_4 = (gg[2] * gg[0] +
+               (gg[1] + gg[2] * gg[2]) * gg[1] +
+               (gg[0] + gg[2] * gg[1] + gg[1] * gg[2] + gg[2] * gg[2] * gg[2]) * gg[2]) * digit_0
+    # gg[2]*gg[1] + gg[1]*gg[2] == 0
+    digit_4 = (gg[2]*gg[0] +
+               (gg[1] + gg[2]*gg[2]) * gg[1] +
+               (gg[0] + gg[2]*gg[2]*gg[2]) * gg[2]) * digit_0
+    # flatten
+    digit_4 = (gg[0]*gg[2] +
+               gg[1]*gg[1] + gg[1]*gg[2]*gg[2] +
+               gg[0]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+    # gg[0]*gg[2] + gg[0]*gg[2] == 0
+    digit_4 = (gg[1]*gg[1] + gg[1]*gg[2]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+
+    # next!
+    digit_5 = ((digit_0 * gg[1] + (digit_0 * gg[2]) * gg[2]) * gg[0] +
+               ((gg[0] + gg[2]*gg[2]*gg[2]) * digit_0) * gg[1] +
+               ((gg[1]*gg[1] + gg[1]*gg[2]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]) * digit_0) * gg[2])
+    digit_5 = (gg[1]*gg[0] + gg[2]*gg[2]*gg[0] +
+               gg[0]*gg[1] + gg[2]*gg[2]*gg[2]*gg[1] +
+               gg[1]*gg[1]*gg[2] + gg[1]*gg[2]*gg[2]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+    digit_5 = (gg[2]*gg[2]*gg[0] +
+               gg[2]*gg[2]*gg[2]*gg[1] +
+               gg[1]*gg[1]*gg[2] + gg[1]*gg[2]*gg[2]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+    digit_5 = (gg[2]*gg[2]*gg[0] + gg[1]*gg[1]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+
+    # next!
+    digit_6 = (((gg[0] + gg[2]*gg[2]*gg[2])) * gg[0] +
+           ((gg[1]*gg[1] + gg[1]*gg[2]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2])) * gg[1] +
+           ((gg[2]*gg[2]*gg[0] + gg[1]*gg[1]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]*gg[2])) * gg[2]) * digit_0
+    digit_6 = (gg[0]*gg[0] + gg[2]*gg[2]*gg[2]*gg[0] +
+           gg[1]*gg[1]*gg[1] + gg[1]*gg[2]*gg[2]*gg[1] + gg[2]*gg[2]*gg[2]*gg[2]*gg[1] +
+           gg[2]*gg[2]*gg[2]*gg[0] + gg[1]*gg[1]*gg[2]*gg[2] + gg[2]*gg[2]*gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+    digit_6 = (gg[0]*gg[0] + gg[2]*gg[2]*gg[2]*gg[0] +
+           gg[1]*gg[1]*gg[1] + gg[2]*gg[2]*gg[2]*gg[2]*gg[1] +
+           gg[2]*gg[2]*gg[2]*gg[0] + gg[2]*gg[2]*gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+    digit_6 = (gg[0]*gg[0] + 
+           gg[1]*gg[1]*gg[1] + gg[2]*gg[2]*gg[2]*gg[2]*gg[1] +
+           gg[2]*gg[2]*gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+    digit_6 = (gg[0]*gg[0] + gg[1]*gg[1]*gg[1] + gg[2]*gg[2]*gg[2]*gg[2]*gg[1] + gg[2]*gg[2]*gg[2]*gg[2]*gg[2]*gg[2]) * digit_0
+
+
+    # new idea, instead of producing a single new value, we produce three new values from three inputs
+    digit_3 = (digit_0 * gg[0] +
+               digit_1 * gg[1] +
+               digit_2 * gg[2])
+    # becomes:
+    f(digit_0, digit_1, digit_2) = (digit_1, digit_2, (digit_0 * gg[0] + digit_1 * gg[1] + digit_2 * gg[2]))
+    # written as a matrix:
+    [
+        [0, 0, gg[0]],
+        [1, 0, gg[1]],
+        [0, 1, gg[2]],
+    ]
+    # hm that doesn't seem useful, forget it
+
+    # initial 3 values
+    digit_0 = 1 * digit_0
+    digit_1 = gg[2] * digit_0
+    digit_2 = (gg[1] + (gg[2] * gg[2])) * digit_0
+
+    # next 3 values as a function of the first three
+    digit_3 = (digit_0 * gg[0] +
+               digit_1 * gg[1] +
+               digit_2 * gg[2])
+
+    digit_4 = (digit_1 * gg[0] +
+               digit_2 * gg[1] +
+               (digit_0 * gg[0] + digit_1 * gg[1] + digit_2 * gg[2]) * gg[2])
+    digit_4 = (digit_1 * gg[0] +
+               digit_2 * gg[1] +
+               digit_0 * gg[0] * gg[2] +
+               digit_1 * gg[1] * gg[2] +
+               digit_2 * gg[2] * gg[2])
+    digit_4 = (digit_0 * gg[0] * gg[2] +
+               digit_1 * (gg[0] + gg[1] * gg[2]) +
+               digit_2 * (gg[1] + gg[2] * gg[2]) +
+
+    digit_5 = (digit_2 * gg[0] +
+               (digit_0 * gg[0] + digit_1 * gg[1] + digit_2 * gg[2]) * gg[1] +
+               (digit_1 * gg[0] + digit_2 * gg[1] + digit_0 * gg[0] * gg[2] + digit_1 * gg[1] * gg[2] + digit_2 * gg[2] * gg[2]) * gg[2])
+    digit_5 = (digit_2 * gg[0] +
+               digit_0 * gg[0] * gg[1] +
+               digit_1 * gg[1] * gg[1] +
+               digit_2 * gg[2] * gg[1] +
+               digit_1 * gg[0] * gg[2] +
+               digit_2 * gg[1] * gg[2] +
+               digit_0 * gg[0] * gg[2] * gg[2] +
+               digit_1 * gg[1] * gg[2] * gg[2] +
+               digit_2 * gg[2] * gg[2] * gg[2])
+    digit_5 = (digit_0 * gg[0] * gg[1] +
+               digit_0 * gg[0] * gg[2] * gg[2] +
+               digit_1 * gg[1] * gg[1] +
+               digit_1 * gg[0] * gg[2] +
+               digit_1 * gg[1] * gg[2] * gg[2] +
+               digit_2 * gg[2] * gg[2] * gg[2]
+               digit_2 * gg[1] * gg[2] +
+               digit_2 * gg[0] +
+               digit_2 * gg[2] * gg[1])
+    digit_5 = (digit_0 * (gg[0] * gg[1] + gg[0] * gg[2] * gg[2]) +
+               digit_1 * (gg[1] * gg[1] + gg[0] * gg[2] + gg[1] * gg[2] * gg[2]) +
+               digit_2 * (gg[2] * gg[2] * gg[2] + gg[1] * gg[2] + gg[0] + gg[2] * gg[1]))
+
+    # okay so this might work, but it's fundamentally quadratic so kinda expensive.
+
+    
+    '''
+
+    def mat_mul(a, b):
+        assert len(a[0]) == len(b)
+        result = []
+        for i in range(len(a)):
+            row = []
+            for j in range(len(b[0])):
+                x = 0
+                for k in range(len(b)):
+                    x ^= gf_mul(a[i][k], b[k][j])
+                row.append(x)
+            result.append(row)
+        return result
+
+    def sym_mat_mul(a, b):
+        assert len(a[0]) == len(b)
+        result = []
+        for i in range(len(a)):
+            row = []
+            for j in range(len(b[0])):
+                x = '0'
+                for k in range(len(b)):
+                    if a[i][k] != '0' and b[k][j] != '0': 
+                        if x == '0':
+                            x = ''
+                        else:
+                            x += ' + '
+                        x += f"{a[i][k]} * {b[k][j]}"
+                row.append(x)
+            result.append(row)
+        return result
+
+    L = [[f'l{i}{j}' if i >= j else '0' for j in range(3)] for i in range(3)]
+    U = [[f'u{i}{j}' if i <= j else '0' for j in range(3)] for i in range(3)]
+
+    print(repr(sym_mat_mul(L, U)))
+
+    # [
+    #     ['l00 * u00', 'l00 * u01',             'l00 * u02'],
+    #     ['l10 * u00', 'l10 * u01 + l11 * u11', 'l10 * u02 + l11 * u12'],
+    #     ['l20 * u00', 'l20 * u01 + l21 * u11', 'l20 * u02 + l21 * u12 + l22 * u22']
+    # ]
+    # comparing this with sym_m:
+    # by the first column, u00 can't be zero, so l00 must be zero.
+    # but by the first row, l00 can't be zero.
+    
+    sym_m = [
+        ['0', '0', 'gg[0]'],
+        ['1', '0', 'gg[1]'],
+        ['0', '1', 'gg[2]'],
+    ]
+
+    assert(sym_mat_mul([['digit_0', 'digit_1', 'digit_2']], sym_m) == [[
+        'digit_1 * 1',
+        'digit_2 * 1',
+        'digit_0 * gg[0] + digit_1 * gg[1] + digit_2 * gg[2]',
+    ]])
+
+
+
 
 def poly_div(f, g, lc_g_inv = None):
     (q, r) = poly_divmod(f, g, lc_g_inv)
