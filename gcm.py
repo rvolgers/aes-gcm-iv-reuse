@@ -283,7 +283,7 @@ poly_sub = poly_add
 
 # lc_g_inv means "inverse of the leading coefficient of g".
 # if you already have it, passing it in saves some work.
-def poly_divmod(f, g, lc_g_inv = None):
+def poly_divmod_simple(f, g, lc_g_inv = None):
 
     assert g != POLY_ZERO, "cannot divide by zero"
 
@@ -293,6 +293,7 @@ def poly_divmod(f, g, lc_g_inv = None):
     assert g[-1] != 0, "g is not trimmed"
     assert f[-1] != 0, "f is not trimmed"
 
+    rdigits = len(g) - 1
     qdigits = len(f) - len(g) + 1
     if qdigits <= 0:
         return (POLY_ZERO, f)
@@ -305,18 +306,80 @@ def poly_divmod(f, g, lc_g_inv = None):
 
     for i in reversed(range(qdigits)):
         lc = r[i + len(g) - 1]
+        print(f"old: lc {i} = {lc}")
         if lc != 0:
             digit = gf_mul(lc, lc_g_inv)
             q[i] = digit
             r[i + len(g) - 1] = 0
             for j in range(len(g) - 1):
-                r[i + j] ^= gf_mul(digit, g[j])
+                tmp = gf_mul(digit, g[j])
+                if i + j < rdigits:
+                    print(f"old: r[{i}+{j}] ^= gf_mul(q[{i}], g[{j}])")
+                r[i + j] ^= tmp
 
     # assert r[-qdigits:] == [0] * qdigits
 
     return (q, poly_trim(r[:-qdigits]))
 
-if True:
+
+# lc_g_inv means "inverse of the leading coefficient of g".
+# if you already have it, passing it in saves some work.
+def poly_divmod(f, g, lc_g_inv = None):
+
+    assert g != POLY_ZERO, "cannot divide by zero"
+
+    if f == POLY_ZERO:
+        return (POLY_ZERO, POLY_ZERO)
+
+    assert g[-1] != 0, "g is not trimmed"
+    assert f[-1] != 0, "f is not trimmed"
+
+    rdigits = len(g) - 1
+    qdigits = len(f) - rdigits
+    if qdigits <= 0:
+        return (POLY_ZERO, f)
+
+    if lc_g_inv is None:
+        lc_g_inv = gf_inverse(g[-1])
+
+    q = [0] * qdigits
+    r = f[:]
+
+    for i in reversed(range(qdigits)):
+        # previous q's, most recent first: prev_qs = q[i+1:]
+        # lets index into this slice with j in range(len(prev_qs))
+        # from the most recent, we want the second coefficient of g, which is at g[len(g)-2]
+        # putting that in terms of j: g[len(g)-2-j]
+        # this puts a second upper bound on j: j <= len(g) - 2 (or equivalently: j < len(g) - 1)
+        lc = r[i + rdigits]
+        for j in range(min(rdigits, qdigits - (i + 1))):
+            lc ^= gf_mul(q[i + 1 + j], g[len(g) - 2 - j])
+        print(f"new: lc {i} = {lc}")
+        if lc != 0:
+            digit = gf_mul(lc, lc_g_inv)
+            q[i] = digit
+            r[i + rdigits] = 0
+
+    for i in reversed(range(rdigits)):
+        for j in range(rdigits - (i + 1), min(rdigits, qdigits + rdigits - (i + 1))):
+            q_i = i + 1 + j - rdigits
+            g_i = len(g) - 2 - j
+            assert q_i >= 0
+            tmp = gf_mul(q[q_i], g[g_i])
+            print(f"new: r[{i}] ^= gf_mul(q[{q_i}], g[{g_i}])")
+            r[i] ^= tmp
+
+    r = poly_trim(r)
+    assert len(r) <= rdigits
+
+    assert (q, r) == poly_divmod_simple(f, g, lc_g_inv)
+
+    return (q, r)
+
+if False:
+    import re
+    def human_sort_key(s):
+        return [int(t) if i & 1 else t for i, t in enumerate(re.split('([0-9]+)', s))]
 
     # all values are in sum-of-products form
     def prod_to_str(p):
@@ -324,6 +387,7 @@ if True:
         return ' * '.join(f for f in p)
     def sym_to_str(s):
         terms = [prod_to_str(p) for p in s if not ('0' in p)]
+        terms.sort(key = human_sort_key)
         # terms = [f"{t} * {m}" if m > 1 else t for t, m in sorted(Counter(terms).items())]
         return ' + '.join(terms)
     def sym_mul_const(val, const):
@@ -338,18 +402,81 @@ if True:
     digits = []
     for i in reversed(range(len(f))):
         lc = r[i]
-        digit = sym_mul_const(lc, 'lc_g_inv')
+        digit_without_lc_g_inv = lc
+        digit = sym_mul_const(lc, f'inv(g[{len(g) - 1}])')
         digits.append(digit)
-        if True:
+        # if n < 3:
+        #     digit = [[f'digit_{n}']]
+        #     digit_without_lc_g_inv = [[f'digit_{n} * g[{len(g) - 1}]']]
+        # preserve r[i] at the moment they would otherwise have been zeroed
+        #r[i] = [['0']]
+        for j in reversed(range(len(g) - 1)):
+            if i - len(g) + 1 + j < 0: break
+            #r[i - len(g) + 1 + j] = deepcopy(r[i - len(g) + 1 + j]) + sym_mul_const(deepcopy(digit), f'g[{j}]')
+            # use lc instead of digit and gg instead of g. this moves the lc_g_inv factor from digit to gg.
+            r[i - len(g) + 1 + j] = deepcopy(r[i - len(g) + 1 + j]) + sym_mul_const(deepcopy(digit_without_lc_g_inv), f'gg[{j}]')
+        n += 1
+
+    # for i, t in enumerate(digits):
+    #     if i > 6: break
+    #     prefix = f"digit_{i} = ("
+    #     indent = " " * len(prefix)
+    #     print(prefix + sym_to_str(t).replace(' + ', ' +\n' + indent) + ')')
+
+    for i, t in enumerate(r):
+        prefix = f"r_{i} = ("
+        indent = " " * len(prefix)
+        print(prefix + sym_to_str(t).replace(' + ', ' +\n' + indent) + ')')
+
+if False:
+    import re
+    def human_sort_key(s):
+        return [int(t) if i & 1 else t for i, t in enumerate(re.split('([0-9]+)', s))]
+
+    # all values are in sum-of-products form
+    def prod_to_str(p):
+        # return ' * '.join(f if e == 1 else f"{f}**{e}" for f,e in sorted(Counter(p).items()))
+        return ' * '.join(f for f in p)
+    def sym_to_str(s):
+        terms = [prod_to_str(p) for p in s if not ('0' in p)]
+        terms.sort(key = human_sort_key)
+        # terms = [f"{t} * {m}" if m > 1 else t for t, m in sorted(Counter(terms).items())]
+        return ' + '.join(terms)
+    def sym_mul_const(val, const):
+        return [p + [const] for p in val]
+    f = [[[f"0"]] for i in range(14)]
+    f[-1] = [["lc(f)"]]
+    g = [[[f"g{i}"]] for i in range(4)]
+    g[-1] = [["lc(g)"]]
+    qdigits = len(f) - len(g) + 1
+    r = f[:]
+    n = 0
+    digits = []
+    for i in reversed(range(len(f))):
+        lc = r[i]
+        digit_without_lc_g_inv = lc
+        digit = sym_mul_const(lc, f'inv(g[{len(g) - 1}])')
+        digits.append(digit)
+        if n < 3:
             digit = [[f'digit_{n}']]
-        # r[i] = [['0']]
+            digit_without_lc_g_inv = [[f'digit_{n} * g[{len(g) - 1}]']]
+        # preserve r[i] at the moment they would otherwise have been zeroed
+        #r[i] = [['0']]
         for j in reversed(range(len(g))):
             if i - len(g) + 1 + j < 0: break
-            r[i - len(g) + 1 + j] = deepcopy(r[i - len(g) + 1 + j]) + sym_mul_const(deepcopy(digit), f'g[{j}]')
+            #r[i - len(g) + 1 + j] = deepcopy(r[i - len(g) + 1 + j]) + sym_mul_const(deepcopy(digit), f'g[{j}]')
+            # use lc instead of digit and gg instead of g. this moves the lc_g_inv factor from digit to gg.
+            r[i - len(g) + 1 + j] = deepcopy(r[i - len(g) + 1 + j]) + sym_mul_const(deepcopy(digit_without_lc_g_inv), f'gg[{j}]')
         n += 1
 
     for i, t in enumerate(digits):
+        if i > 6: break
         prefix = f"digit_{i} = ("
+        indent = " " * len(prefix)
+        print(prefix + sym_to_str(t).replace(' + ', ' +\n' + indent) + ')')
+
+    for i, t in enumerate(r):
+        prefix = f"r_{i} = ("
         indent = " " * len(prefix)
         print(prefix + sym_to_str(t).replace(' + ', ' +\n' + indent) + ')')
     '''
@@ -495,8 +622,10 @@ if True:
                digit_2 * (gg[2] * gg[2] * gg[2] + gg[1] * gg[2] + gg[0] + gg[2] * gg[1]))
 
     # okay so this might work, but it's fundamentally quadratic so kinda expensive.
+    # but lets see how it goes, maybe we can optimize it somehow...
 
     
+
     '''
 
     def mat_mul(a, b):
