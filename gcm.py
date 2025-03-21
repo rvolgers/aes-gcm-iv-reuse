@@ -342,22 +342,22 @@ def poly_divmod(f, g, lc_g_inv = None):
     if lc_g_inv is None:
         lc_g_inv = gf_inverse(g[-1])
 
-    q = [0] * qdigits
-    r = f[:]
+    qr = f[:]
 
     for i in reversed(range(rdigits, qdigits + rdigits)):
-        tmp = r[i]
+        tmp = qr[i]
         for j in range(max(0, rdigits - (i + 1)), min(rdigits, qdigits + rdigits - (i + 1))):
-            tmp ^= gf_mul(q[i + 1 + j - rdigits], g[len(g) - 2 - j])
+            tmp ^= gf_mul(qr[i + 1 + j], g[len(g) - 2 - j])
         tmp = gf_mul(tmp, lc_g_inv)
-        q[i - rdigits] = tmp
-        r[i] = 0
+        qr[i] = tmp
 
     for i in reversed(range(rdigits)):
-        tmp = r[i]
+        tmp = qr[i]
         for j in range(max(0, rdigits - (i + 1)), min(rdigits, qdigits + rdigits - (i + 1))):
-            tmp ^= gf_mul(q[i + 1 + j - rdigits], g[len(g) - 2 - j])
-        r[i] = tmp
+            tmp ^= gf_mul(qr[i + 1 + j], g[len(g) - 2 - j])
+        qr[i] = tmp
+
+    r, q = qr[:rdigits], qr[rdigits:]
 
     r = poly_trim(r)
     assert len(r) <= rdigits
