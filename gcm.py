@@ -347,7 +347,7 @@ def poly_divmod(f, g, lc_g_inv = None):
     for i in reversed(range(0, qdigits + rdigits)):
         tmp = qr[i]
         for j in range(max(0, rdigits - (i + 1)), min(rdigits, qdigits + rdigits - (i + 1))):
-            tmp ^= gf_mul(qr[i + 1 + j], g[len(g) - 2 - j])
+            tmp ^= gf_mul(qr[i + 1 + j], g[rdigits - 1 - j])
         if i >= rdigits:
             tmp = gf_mul(tmp, lc_g_inv)
         qr[i] = tmp
