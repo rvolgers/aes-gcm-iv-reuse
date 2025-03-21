@@ -346,11 +346,6 @@ def poly_divmod(f, g, lc_g_inv = None):
     r = f[:]
 
     for i in reversed(range(rdigits, qdigits + rdigits)):
-        # previous q's, most recent first: prev_qs = q[i+1:]
-        # lets index into this slice with j in range(len(prev_qs))
-        # from the most recent, we want the second coefficient of g, which is at g[len(g)-2]
-        # putting that in terms of j: g[len(g)-2-j]
-        # this puts a second upper bound on j: j <= len(g) - 2 (or equivalently: j < len(g) - 1)
         tmp = r[i]
         for j in range(max(0, rdigits - (i + 1)), min(rdigits, qdigits + rdigits - (i + 1))):
             tmp ^= gf_mul(q[i + 1 + j - rdigits], g[len(g) - 2 - j])
