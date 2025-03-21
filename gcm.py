@@ -351,23 +351,18 @@ def poly_divmod(f, g, lc_g_inv = None):
         # from the most recent, we want the second coefficient of g, which is at g[len(g)-2]
         # putting that in terms of j: g[len(g)-2-j]
         # this puts a second upper bound on j: j <= len(g) - 2 (or equivalently: j < len(g) - 1)
-        lc = r[i]
+        tmp = r[i]
         for j in range(max(0, rdigits - (i + 1)), min(rdigits, qdigits + rdigits - (i + 1))):
-            lc ^= gf_mul(q[i + 1 + j - rdigits], g[len(g) - 2 - j])
-        print(f"new: lc {i} = {lc}")
-        if lc != 0:
-            digit = gf_mul(lc, lc_g_inv)
-            q[i - rdigits] = digit
-            r[i] = 0
+            tmp ^= gf_mul(q[i + 1 + j - rdigits], g[len(g) - 2 - j])
+        tmp = gf_mul(tmp, lc_g_inv)
+        q[i - rdigits] = tmp
+        r[i] = 0
 
     for i in reversed(range(rdigits)):
+        tmp = r[i]
         for j in range(max(0, rdigits - (i + 1)), min(rdigits, qdigits + rdigits - (i + 1))):
-            q_i = i + 1 + j - rdigits
-            g_i = len(g) - 2 - j
-            assert q_i >= 0
-            tmp = gf_mul(q[q_i], g[g_i])
-            print(f"new: r[{i}] ^= gf_mul(q[{q_i}], g[{g_i}])")
-            r[i] ^= tmp
+            tmp ^= gf_mul(q[i + 1 + j - rdigits], g[len(g) - 2 - j])
+        r[i] = tmp
 
     r = poly_trim(r)
     assert len(r) <= rdigits
