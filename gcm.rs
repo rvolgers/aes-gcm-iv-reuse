@@ -131,7 +131,7 @@ fn gf_inverse(x: u128) -> u128 {
 
     assert!(x != 0);
 
-    // inverse by extended gcd algorithm.
+    // inverse by extended euclidean algorithm.
     // https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Computing_multiplicative_inverses_in_modular_structures
 
     // u2/v2 are unused but useful for understanding the algorithm. compiler will optimize them out.
@@ -140,7 +140,9 @@ fn gf_inverse(x: u128) -> u128 {
 
     // hardcode u3.bit_len() for the first iteration to 129 to account for
     // the implicit 1 bit at position 128.
-    // inside the loop v3 >= 2, so v3.bit_len() >= 2, so q <= 127.
+    // since the algorithm proceeds by iteratively cancelling the highest bit of u3,
+    // after the first loop iteration everything will be within 128 bits again.
+    // inside the loop v3 >= 2, so v3.bit_len() >= 2, so q <= 127, so v1 << q remains within 128 bits.
     let mut q = 129 - v3.bit_len();
 
     // notice that the GF_POLY term of the invariant is zero modulo GF_POLY.
@@ -148,15 +150,20 @@ fn gf_inverse(x: u128) -> u128 {
     // which means v1 is the inverse of x modulo GF_POLY.
     // note that the final v3 is actually the gcd of GF_POLY and x.
     // we know it will always be 1, because GF_POLY is irreducible.
+    // this also cleanly handles the x == 1 case.
     while v3 != 1 {
         // loop invariants (imagine GF_POLY includes its implicit 128th bit here as well)
         // q (= u3.bit_len() - v3.bit_len()) >= 0
         // clmul(x, u1) ^ clmul(GF_POLY, u2) == u3
         // clmul(x, v1) ^ clmul(GF_POLY, v2) == v3
+        // (these last two are Bezout's Identity)
         // note that clmul does not reduce modulo a polynomial like gf_mul does.
         // after a single loop iteration the invariant holds with gf_mul as well,
         // although of course the GF_POLY term becomes zero.
 
+        // this is a little different from usual extended euclidean, but relies on the same
+        // rule that the normal one does: for any m, gcd(a + m * b, b) == gcd(a, b)
+        // we can apply this repeatedly to make u3 and v3 smaller.
         u1 ^= v1 << q;
         u2 ^= v2 << q;
         u3 ^= v3 << q;
