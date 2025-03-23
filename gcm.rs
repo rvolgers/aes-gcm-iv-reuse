@@ -149,21 +149,22 @@ fn gf_inverse(x: u128) -> u128 {
     // note that the final v3 is actually the gcd of GF_POLY and x.
     // we know it will always be 1, because GF_POLY is irreducible.
     while v3 != 1 {
-        // loop invariant (imagine GF_POLY includes its implicit 128th bit here as well)
+        // loop invariants (imagine GF_POLY includes its implicit 128th bit here as well)
+        // q (= u3.bit_len() - v3.bit_len()) >= 0
         // clmul(x, u1) ^ clmul(GF_POLY, u2) == u3
         // clmul(x, v1) ^ clmul(GF_POLY, v2) == v3
         // note that clmul does not reduce modulo a polynomial like gf_mul does.
         // after a single loop iteration the invariant holds with gf_mul as well,
         // although of course the GF_POLY term becomes zero.
 
-        (u1, u2, u3, v1, v2, v3) = (v1, v2, v3, u1 ^ (v1 << q), u2 ^ (v2 << q), u3 ^ (v3 << q));
+        u1 ^= v1 << q;
+        u2 ^= v2 << q;
+        u3 ^= v3 << q;
 
         let mut u3_len = u3.bit_len();
         let mut v3_len = v3.bit_len();
         if u3_len < v3_len {
-            // next iteration would normally be a no-op except for the swap.
-            // just do the swap here so that the main loop operation becomes unconditional and q can be unsigned.
-            // don't worry about the loop exit condition since v3 == 1 would imply u3 == 0 which is not possible.
+            // ensure q >= 0 by swapping u and v
             (u1, u2, u3, u3_len, v1, v2, v3, v3_len) = (v1, v2, v3, v3_len, u1, u2, u3, u3_len);
         }
         q = u3_len - v3_len;
