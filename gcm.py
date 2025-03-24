@@ -788,7 +788,9 @@ def poly_modexp_table(f, e, g):
     return prod
 
 def mont_reduce(f, g, G):
-    # TODO optimize all of this
+    # to see speed wins, the multiplications should be optimized to only
+    # compute the terms that are actually used. even then, there doesn't
+    # seem to be an obvious advantage.
     m = poly_mul(f[:len(g)], G)[:len(g)]
     t = poly_add(f, poly_mul(m, g))[len(g):]
     t = poly_trim(t)
