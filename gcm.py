@@ -257,6 +257,7 @@ POLY_ONE = [1]
 POLY_X = [0, 1]
 
 def poly_scalar_mul(f, x):
+    if x == 0: return []
     return [gf_mul(c, x) for c in f]
 
 def poly_trim(f):
@@ -306,15 +307,15 @@ def poly_divmod_simple(f, g, lc_g_inv = None):
 
     for i in reversed(range(qdigits)):
         lc = r[i + len(g) - 1]
-        print(f"old: lc {i} = {lc}")
+        # print(f"old: lc {i} = {lc}")
         if lc != 0:
             digit = gf_mul(lc, lc_g_inv)
             q[i] = digit
             r[i + len(g) - 1] = 0
             for j in range(len(g) - 1):
                 tmp = gf_mul(digit, g[j])
-                if i + j < rdigits:
-                    print(f"old: r[{i}+{j}] ^= gf_mul(q[{i}], g[{j}])")
+                # if i + j < rdigits:
+                #     print(f"old: r[{i}+{j}] ^= gf_mul(q[{i}], g[{j}])")
                 r[i + j] ^= tmp
 
     # assert r[-qdigits:] == [0] * qdigits
@@ -322,6 +323,7 @@ def poly_divmod_simple(f, g, lc_g_inv = None):
     return (q, poly_trim(r[:-qdigits]))
 
 
+# poly_divmod_simple but optimized for fewer memory reads and writes
 # lc_g_inv means "inverse of the leading coefficient of g".
 # if you already have it, passing it in saves some work.
 def poly_divmod(f, g, lc_g_inv = None):
@@ -357,7 +359,7 @@ def poly_divmod(f, g, lc_g_inv = None):
     r = poly_trim(r)
     assert len(r) <= rdigits
 
-    assert (q, r) == poly_divmod_simple(f, g, lc_g_inv)
+    # assert (q, r) == poly_divmod_simple(f, g, lc_g_inv)
 
     return (q, r)
 
@@ -716,7 +718,7 @@ def poly_square(f):
 
     return result
 
-def poly_modexp(f, e, g):
+def poly_modexp_simple(f, e, g):
     # simple exponentation-by-squaring
 
     # we need this often, so might as well precalculate it
@@ -734,6 +736,40 @@ def poly_modexp(f, e, g):
         f = poly_mod(poly_square(f), g, lc_g_inv)
 
     return prod
+
+
+def poly_modexp(f, e, g):
+
+    orig_e = e
+    orig_f = f[:]
+
+    lc_g_inv = gf_inverse(g[-1])
+
+    # this can be made iterative but for testing this is clearer
+    table = [None] * (len(g) * 2)
+    for i in range(len(g) - 1, len(g) * 2):
+        table[i] = poly_mod(([0] * i) + [1], g, lc_g_inv)
+
+    prod = POLY_ONE
+    while True:
+        if e & 1:
+            prod = poly_mod(poly_mul(prod, f), g, lc_g_inv)
+
+        e >>= 1
+        if e == 0:
+            break
+
+        f = poly_square(f)
+        tmp = f[:len(g) - 1]
+        for i in range(len(g) - 1, len(f)):
+            tmp = poly_add(poly_scalar_mul(table[i], f[i]), tmp)
+        f = tmp
+
+    # assert prod == poly_modexp_simple(orig_f, orig_e, g)
+
+    return prod
+
+
 
 def poly_formal_derivative(f):
     return [gf_mul(c, e) for e, c in enumerate(f)][1:]
