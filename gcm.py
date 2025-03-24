@@ -257,7 +257,7 @@ POLY_ONE = [1]
 POLY_X = [0, 1]
 
 def poly_scalar_mul(f, x):
-    if x == 0: return []
+    if x == 0: return POLY_ZERO
     return [gf_mul(c, x) for c in f]
 
 def poly_trim(f):
@@ -699,6 +699,24 @@ def poly_gcd(a, b):
     # even though it is not strictly in the definition of gcd?
     return poly_monic(a)
 
+def poly_inverse(f, g):
+    # basically verbatim from:
+    # https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Simple_algebraic_field_extensions
+
+    r = g[:]
+    newr = f[:]
+    t = POLY_ZERO
+    newt = POLY_ONE
+
+    while newr != POLY_ZERO:
+        (qq, rr) = poly_divmod(r, newr)
+        (t, newt) = (newt, poly_sub(t, poly_mul(qq, newt)))
+        (r, newr) = (newr, rr)
+
+    assert len(r) == 1
+
+    return poly_scalar_mul(t, gf_inverse(r[0]))
+
 def poly_mul(f, g):
     result = [0] * (len(f) + len(g) - 1)
     for ef, cf in enumerate(f):
@@ -738,7 +756,7 @@ def poly_modexp_simple(f, e, g):
     return prod
 
 
-def poly_modexp(f, e, g):
+def poly_modexp_table(f, e, g):
 
     orig_e = e
     orig_f = f[:]
@@ -769,7 +787,49 @@ def poly_modexp(f, e, g):
 
     return prod
 
+def mont_reduce(f, g, G):
+    # TODO optimize all of this
+    m = poly_mul(f[:len(g)], G)[:len(g)]
+    t = poly_add(f, poly_mul(m, g))[len(g):]
+    t = poly_trim(t)
+    assert len(t) <= len(g)
+    return poly_mod(t, g)
 
+def into_mont(f, g, G):
+    return poly_mod([0] * len(g) + f, g)
+
+def from_mont(f, g, G):
+    return mont_reduce(f, g, G)
+
+def poly_modexp(f, e, g):
+
+    orig_e = e
+    orig_f = f[:]
+
+    R = [0] * len(g) + [1]
+    G = poly_inverse(g, R)
+
+    # assert poly_mod(poly_mul(g, G), R) == POLY_ONE
+
+    fm = into_mont(f, g, G)
+
+    prod = into_mont(POLY_ONE, g, G)
+
+    while True:
+        if e & 1:
+            prod = mont_reduce(poly_mul(prod, fm), g, G)
+
+        e >>= 1
+        if e == 0:
+            break
+
+        fm = mont_reduce(poly_square(fm), g, G)
+
+    result = from_mont(prod, g, G)
+
+    # assert result == poly_modexp_simple(orig_f, orig_e, g)
+
+    return result
 
 def poly_formal_derivative(f):
     return [gf_mul(c, e) for e, c in enumerate(f)][1:]
