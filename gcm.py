@@ -756,17 +756,23 @@ def poly_modexp_simple(f, e, g):
     return prod
 
 
-def poly_modexp_table(f, e, g):
+def poly_modexp(f, e, g):
 
     orig_e = e
     orig_f = f[:]
 
     lc_g_inv = gf_inverse(g[-1])
 
-    # this can be made iterative but for testing this is clearer
     table = [None] * (len(g) * 2)
-    for i in range(len(g) - 1, len(g) * 2):
-        table[i] = poly_mod(([0] * i) + [1], g, lc_g_inv)
+    i = len(g) - 1
+    if i & 1 != 0: i += 1
+    # all entries could be computed like this but the iterative approach is faster
+    table[i] = poly_mod(([0] * i) + [1], g, lc_g_inv)
+    # odd entries are unused because those coefficients are always zero (see poly_square)
+    i += 2
+    while i < len(table):
+        table[i] = poly_mod([0, 0] + table[i - 2], g, lc_g_inv)
+        i += 2
 
     prod = POLY_ONE
     while True:
@@ -783,7 +789,7 @@ def poly_modexp_table(f, e, g):
             tmp = poly_add(poly_scalar_mul(table[i], f[i]), tmp)
         f = tmp
 
-    # assert prod == poly_modexp_simple(orig_f, orig_e, g)
+    assert prod == poly_modexp_simple(orig_f, orig_e, g)
 
     return prod
 
@@ -803,7 +809,7 @@ def into_mont(f, g, G):
 def from_mont(f, g, G):
     return mont_reduce(f, g, G)
 
-def poly_modexp(f, e, g):
+def poly_modexp_montgomery(f, e, g):
 
     orig_e = e
     orig_f = f[:]
@@ -1170,8 +1176,8 @@ if __name__ == '__main__':
     from random import randbytes
 
     recovered = recover_auth_secret([
-        gcm.encrypt(iv, randbytes(100), b""),
-        gcm.encrypt(iv, randbytes(100), b""),
+        gcm.encrypt(iv, randbytes(100+16), b""),
+        gcm.encrypt(iv, randbytes(100+16), b""),
         # gcm.encrypt(iv, randbytes(100), b""),
     ])
 
