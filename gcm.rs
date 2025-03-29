@@ -1,3 +1,8 @@
+// rustc -C target-cpu=native -C opt-level=3 -g gcm.rs
+
+// rustc -C target-cpu=native -C opt-level=3 -g gcm.rs -L. -lstatic:+verbatim=find_roots_ntl.o -lntl -lstdc++
+
+
 #![feature(random)]
 #![feature(array_chunks)]
 #![feature(let_chains)]
@@ -7,6 +12,26 @@ use std::convert::TryInto;
 use std::random::random;
 use std::random::DefaultRandomSource;
 use std::random::RandomSource;
+use std::ffi::c_int;
+
+unsafe extern "C" {
+    // int find_roots_ntl(unsigned char *poly, int coeff_count, unsigned char* roots)
+    fn find_roots_ntl(poly: *const u8, coeff_count: c_int, roots: *mut u8) -> c_int;
+}
+
+fn find_roots_ntl_wrapper(poly: &[u128]) -> Vec<u128> {
+    let poly_bytes: Vec<u8> = poly.iter().copied().flat_map(u128::to_le_bytes).collect();
+
+    let mut roots_bytes: Vec<u8> = Vec::with_capacity(poly_bytes.len());
+
+    unsafe {
+        let n = find_roots_ntl(poly_bytes.as_ptr(), poly.len() as c_int, roots_bytes.spare_capacity_mut().as_mut_ptr() as *mut u8);
+
+        roots_bytes.set_len(n as usize * 16);
+    }
+
+    roots_bytes.array_chunks().copied().map(u128::from_le_bytes).collect()
+}
 
 // high bit 128 is implicit
 const GF_POLY: u128 = (1 << 7) | (1 << 2) | (1 << 1) | 1;
@@ -461,7 +486,9 @@ fn ciphertext_to_masked_polynomial(ciphertext: &[u8], auth_data: &[u8]) -> Vec<u
 }
 
 fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16])> {
-    
+
+    println!("preprocessing");
+
     // sorting keeps short ciphertexts grouped together.
     // also makes it easy to spot and filter out duplicates.
     ciphertexts.sort_by(|a, b| a.cmp(b).reverse());
@@ -485,6 +512,8 @@ fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16]
 
     assert!(polys.len() > 0);
 
+    println!("gcd");
+
     // combine all polynomials using gcd
     let mut it = polys.iter().rev();
     let mut f = it.next().unwrap().clone();
@@ -492,17 +521,25 @@ fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16]
         f = poly_gcd(f, g);
     }
 
+    println!("invoking NTL");
+    let roots = find_roots_ntl_wrapper(&f);
+    println!("NTL roots = {:?}", roots);
+
     assert!(f.len() >= 2);
 
     // check resulting polynomial is square-free
     let c = poly_gcd(poly_formal_derivative(&f), &f);
     assert!(c == POLY_ONE);
 
+    println!("distinct degree factorization");
+
     // obtain product of linear factors ("distinct degree factorization")
     let h = poly_modexp(POLY_X.to_owned(), 1<<127, &f);
     let h = poly_modexp(h, 2, &f);
     let h = poly_trim(poly_add(h, POLY_X));
     f = poly_gcd(f, &h);
+
+    println!("equal degree factorization");
 
     // break it into linear factors ("equal degree factorization")
     let mut factors = vec![f.clone()];
@@ -524,7 +561,7 @@ fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16]
 
     factors.into_iter().map(|f| {
         assert!(f.len() == 2 && f[1] == 1, "factor not linear and monic");
-        let auth_key = f[0];
+        let auth_key = dbg!(f[0]);
         let keyblock_0 = poly_eval(&test_poly, auth_key);
         (gf_to_bytes(auth_key), gf_to_bytes(keyblock_0))
     }).collect()
@@ -541,15 +578,21 @@ fn main() {
     let mut iv: [u8; 12] = [0; 12];
     (&mut DefaultRandomSource).fill_bytes(&mut iv);
 
-    let mut ciphertext1 = vec![0; 10 * 1024];
+    let mut ciphertext1 = vec![0; 4 * 1024];
     (&mut DefaultRandomSource).fill_bytes(&mut ciphertext1);
     ciphertext1.extend_from_slice(&auth_tag(auth_key, keyblock_0, &ciphertext1, &[]));
 
-    let mut ciphertext2 = vec![0; 10 * 1024];
+    let mut ciphertext2 = vec![0; 4 * 1024];
     (&mut DefaultRandomSource).fill_bytes(&mut ciphertext2);
     ciphertext2.extend_from_slice(&auth_tag(auth_key, keyblock_0, &ciphertext2, &[]));
 
-    let candidates = recover_auth_secret(vec![ciphertext1, ciphertext2]);
+    let mut ciphertext3 = vec![0; 4 * 1024];
+    (&mut DefaultRandomSource).fill_bytes(&mut ciphertext3);
+    ciphertext3.extend_from_slice(&auth_tag(auth_key, keyblock_0, &ciphertext3, &[]));
+
+    let ciphertexts = vec![ciphertext1, ciphertext2];
+
+    let candidates = recover_auth_secret(ciphertexts);
 
     assert!(candidates.contains(&(auth_key, keyblock_0)));
 
