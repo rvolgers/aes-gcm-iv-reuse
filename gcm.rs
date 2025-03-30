@@ -545,7 +545,8 @@ fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16]
     let mut factors = vec![f.clone()];
     while factors.len() != f.len() - 1 {
         let rand: Vec<u128> = (0..(f.len() - 1)).map(|_| random()).collect();
-        let g = poly_modexp(rand, 0x55555555555555555555555555555555, &f);
+        // (2**128-1) / 3, but without overflowing
+        let g = poly_modexp(rand, u128::MAX / 3, &f);
 
         let g = poly_trim(poly_add(g, POLY_ONE));
         factors = factors.into_iter().flat_map(|factor| {
