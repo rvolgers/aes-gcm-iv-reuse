@@ -1069,6 +1069,26 @@ def recover_auth_secret(ciphertexts):
     c = poly_gcd(f, poly_formal_derivative(f))
     assert c == POLY_ONE, "polynomial is not square-free"
 
+    from sage.all import GF, Integer, PolynomialRing
+    modulus = [Integer((GF_POLY >> i) & 1) for i in range(GF_POLY.bit_length())]
+    GF128 = GF(Integer(2)**Integer(128), modulus=modulus, names='b')
+    P = PolynomialRing(GF128, 'x')
+    Pf = P([GF128.from_integer(x) for x in f])
+    tmp = Pf.roots()
+    tmp = [x.to_integer() for x, _ in tmp]
+    print("roots: " + repr(tmp))
+    from root_find import bta, arm, sra
+    tmp = bta(Pf)
+    tmp = [x.to_integer() for x in tmp]
+    print("bta: " + repr(tmp))
+    tmp = arm(Pf)
+    tmp = [x.to_integer() for x in tmp]
+    print("arm: " + repr(tmp))
+    tmp = sra(Pf)
+    tmp = [x.to_integer() for x in tmp]
+    print("sra: " + repr(tmp))
+
+
     # A Computational Introduction to Number Theory and Algebra (v2.5)
     # by Victor Shoup
     # https://www.shoup.net/ntb/ntb-v2_5.pdf
@@ -1110,6 +1130,8 @@ def recover_auth_secret(ciphertexts):
     for x in factors:
         assert len(x) == 2 and x[-1] == 1
         roots.append(x[0])
+
+    print("my roots: "+ repr(roots))
 
     # each root is a potential value of the authentication key.
     # for each one, calculate the value used to mask the auth tag.
