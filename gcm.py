@@ -1074,25 +1074,30 @@ def recover_auth_secret(ciphertexts):
     GF128 = GF(Integer(2)**Integer(128), modulus=modulus, names='b')
     P = PolynomialRing(GF128, 'x')
     Pf = P([GF128.from_integer(x) for x in f])
+    t = time()
     tmp = Pf.roots()
     tmp = [x.to_integer() for x, _ in tmp]
-    print("roots: " + repr(tmp))
+    print("roots: " + repr(tmp) + f" {time() - t}")
     from root_find import bta, arm, sra
+    t = time()
     tmp = bta(Pf)
     tmp = [x.to_integer() for x in tmp]
-    print("bta: " + repr(tmp))
+    print("bta: " + repr(tmp) + f" {time() - t}")
+    t = time()
     tmp = arm(Pf)
     tmp = [x.to_integer() for x in tmp]
-    print("arm: " + repr(tmp))
+    print("arm: " + repr(tmp) + f" {time() - t}")
+    t = time()
     tmp = sra(Pf)
     tmp = [x.to_integer() for x in tmp]
-    print("sra: " + repr(tmp))
+    print("sra: " + repr(tmp) + f" {time() - t}")
 
 
     # A Computational Introduction to Number Theory and Algebra (v2.5)
     # by Victor Shoup
     # https://www.shoup.net/ntb/ntb-v2_5.pdf
 
+    t = time()
     print("performing distinct degree factorization")
     # section 20.4.1 distinct degree factorization
     # note that w,p,q are defined at the start of the chapter
@@ -1131,7 +1136,7 @@ def recover_auth_secret(ciphertexts):
         assert len(x) == 2 and x[-1] == 1
         roots.append(x[0])
 
-    print("my roots: "+ repr(roots))
+    print("my roots: "+ repr(roots) + f" {time() - t}")
 
     # each root is a potential value of the authentication key.
     # for each one, calculate the value used to mask the auth tag.
