@@ -36,15 +36,24 @@ extern "C" int find_roots_ntl(unsigned char *poly, int coeff_count, unsigned cha
 
     MakeMonic(f);
 
+    int roots_count = 0;
+
     // cin >> f;
 
+    vec_GF2E result = FindRoots(f);
+
+    for (long i = 0; i < result.length(); i++) {
+        if (roots_count == coeff_count) break;
+        BytesFromGF2X(roots + roots_count * ELEM_SIZE, rep(result[i]), ELEM_SIZE);
+        roots_count++;
+    }
+
+    #if 0
     vec_pair_GF2EX_long result;
     result = CanZass(f, 1);
     // result = berlekamp(f, 1);
 
     // cout << result << "\n";
-
-    int roots_count = 0;
 
     for (long i = 0; i < result.length(); i++) {
 
@@ -57,6 +66,7 @@ extern "C" int find_roots_ntl(unsigned char *poly, int coeff_count, unsigned cha
             roots_count++;
         }
     }
+    #endif
 
     return roots_count;
 }
