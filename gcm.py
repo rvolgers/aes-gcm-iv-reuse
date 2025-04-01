@@ -40,6 +40,9 @@ def gf_to_bytes(x):
     assert x < (1 << 128), "element not properly reduced"
     return _gf_bitswap(x).to_bytes(length=16, byteorder='little')
 
+def gf_random():
+    return gf_from_bytes(randbytes(16))
+
 # non-reducing version of gf_mul, used for experimentation
 def gf_mul_noreduce(x, y):
     result = 0
@@ -843,6 +846,34 @@ def poly_formal_derivative(f):
     return [gf_mul(c, e) for e, c in enumerate(f)][1:]
 
 
+def poly_roots_bta(f):
+    if len(f) == 2:
+        return [f[0]]
+    elif len(f) <= 1:
+        return []
+
+    # Compute Tr(ax) mod f
+    a = gf_random()
+    aXp = [0, a] # 0 + a * x
+    Tr = aXp[:]
+    for i in range(128-1):
+        aXp = poly_mod(poly_square(aXp), f)
+        Tr = poly_add(Tr, aXp)
+
+    roots = []
+    for c in range(2):
+        nf = poly_gcd(f, poly_trim(poly_sub(Tr, [c])))
+        if len(nf) >= 2:
+            roots.extend(poly_roots_bta(nf))
+            f = poly_div(f, nf)
+            if len(f) <= 2:
+                roots.extend(poly_roots_bta(f))
+                break
+            Tr = poly_mod(Tr, f)
+
+    return roots
+
+
 ##########################
 # AES GCM implementation #
 ##########################
@@ -1092,6 +1123,9 @@ def recover_auth_secret(ciphertexts):
     tmp = [x.to_integer() for x in tmp]
     print("sra: " + repr(tmp) + f" {time() - t}")
 
+    t = time();
+    tmp = poly_roots_bta(f)
+    print("my bta: " + repr(tmp) + f" {time() - t}")
 
     # A Computational Introduction to Number Theory and Algebra (v2.5)
     # by Victor Shoup
