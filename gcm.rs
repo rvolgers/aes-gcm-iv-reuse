@@ -13,6 +13,7 @@ use std::random::random;
 use std::random::DefaultRandomSource;
 use std::random::RandomSource;
 use std::ffi::c_int;
+use std::time::Instant;
 
 unsafe extern "C" {
     // int find_roots_ntl(unsigned char *poly, int coeff_count, unsigned char* roots)
@@ -44,6 +45,9 @@ fn gf_to_bytes(x: u128) -> [u8; 16] {
     x.reverse_bits().to_le_bytes()
 }
 
+fn gf_random() -> u128 {
+    random()
+}
 
 #[cfg(not(all(
     target_feature = "pclmulqdq",
@@ -422,6 +426,40 @@ fn poly_formal_derivative(g: &[u128]) -> Vec<u128> {
     g.iter().copied().enumerate().skip(1).map(|(e, c)| gf_mul(c, e as u128)).collect()
 }
 
+fn poly_roots_bta(f: &Vec<u128>) -> Vec<u128> {
+    if f.len() == 2 {
+        return vec![f[0]];
+    } else if f.len() <= 1 {
+        return vec![];
+    }
+
+    let a = gf_random();
+    let mut axp = vec![0, a];
+    let mut tr = axp.clone();
+    for i in 0..127 {
+        axp = poly_mod(poly_square(axp), f);
+        tr = poly_add(tr, &axp);
+    }
+
+    let mut f = f.clone();
+
+    let mut roots = vec![];
+    for c in 0..2 {
+        let nf = poly_gcd(f.clone(), &poly_trim(poly_add(tr.clone(), &[c])));
+        if nf.len() >= 2 {
+            roots.extend_from_slice(&poly_roots_bta(&nf));
+            f = poly_div(f, &nf);
+            if f.len() <= 2 {
+                roots.extend_from_slice(&poly_roots_bta(&f));
+                break;
+            }
+            tr = poly_mod(tr, &f);
+        }
+    }
+
+    return roots;
+}
+
 fn pad_blocksize(data: &mut Vec<u8>) {
     if data.len() % 16 != 0 {
         data.extend(std::iter::repeat(0).take(16 - (data.len() % 16)));
@@ -531,6 +569,12 @@ fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16]
     let c = poly_gcd(poly_formal_derivative(&f), &f);
     assert!(c == POLY_ONE);
 
+    let now = Instant::now();
+    let roots = poly_roots_bta(&f);
+    println!("BTA roots = {:?} {:?}", roots, now.elapsed());
+
+    let now = Instant::now();
+
     println!("distinct degree factorization");
 
     // obtain product of linear factors ("distinct degree factorization")
@@ -559,6 +603,8 @@ fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16]
             vec![factor]
         }).collect();
     }
+
+    println!("factoring took {:?}", now.elapsed());
 
     factors.into_iter().map(|f| {
         assert!(f.len() == 2 && f[1] == 1, "factor not linear and monic");
