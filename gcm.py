@@ -7,6 +7,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from random import getrandbits
 from time import time
+from functools import reduce
+import operator
 
 ##############################################
 # code for operating on numbers in GF(2^128) #
@@ -243,6 +245,20 @@ def gf_inverse(x):
     # assert v1 == gf_pow(x, (1<<128) - 2)
 
     return v1
+
+
+# factors of the group order
+GROUP_ORDER = (1 << 128) - 1
+GROUP_ORDER_FACTORS = [3, 5, 17, 257, 641, 65537, 274177, 6700417, 67280421310721]
+assert GROUP_ORDER == reduce(operator.mul, GROUP_ORDER_FACTORS, 1)
+
+# generator
+GF_GEN = 2
+assert not any(gf_pow(GF_GEN, x) == (1 << 128) - 1 for x in GROUP_ORDER_FACTORS)
+
+# non-trivial roots of unity (note that 1 is also technically a root of unity)
+ROOTS_OF_UNITY = [gf_pow(GF_GEN, GROUP_ORDER // x) for x in GROUP_ORDER_FACTORS]
+assert all(gf_pow(x, e) == 1 for x, e in zip(ROOTS_OF_UNITY, GROUP_ORDER_FACTORS))
 
 
 ################################################################
