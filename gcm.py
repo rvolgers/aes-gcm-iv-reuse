@@ -252,6 +252,27 @@ GROUP_ORDER = (1 << 128) - 1
 GROUP_ORDER_FACTORS = [3, 5, 17, 257, 641, 65537, 274177, 6700417, 67280421310721]
 assert GROUP_ORDER == reduce(operator.mul, GROUP_ORDER_FACTORS, 1)
 
+assert 3 * 5 == 0xf
+assert 3 * 5 * 17 == 0xff
+assert 3 * 5 * 17 * 257 == 0xffff
+assert 3 * 5 * 17 * 257 * 65537 == 0xffffffff
+assert 3 * 5 * 17 * 257 * 65537 * 641 * 6700417 == 0xffffffffffffffff
+
+# these are the Fermat Numbers, with the first 5 being (the only known) Fermat Primes.
+assert 3 == 0b11
+assert 5 == 0b101
+assert 17 == 0b10001
+assert 257 == 0b100000001
+assert 65537 == 0b10000000000000001
+assert 641 * 6700417 == 0b100000000000000000000000000000001
+assert 274177 * 67280421310721 == 0b10000000000000000000000000000000000000000000000000000000000000001
+
+# From wikipedia:
+# > For any given key and initialization vector value, GCM is limited to encrypting 2**39 − 256 bits
+# That translates to a polynomial length of (2**39 - 256) // 8 // 16 + 1 == 0xffffffff
+# (Note, this also makes sense, as the 12 bytes of IV + 4 bytes of counter = 16 bytes)
+# So that means we only need the "nice" factors to produce roots of unity.
+
 # generator
 GF_GEN = 2
 assert not any(gf_pow(GF_GEN, x) == (1 << 128) - 1 for x in GROUP_ORDER_FACTORS)
