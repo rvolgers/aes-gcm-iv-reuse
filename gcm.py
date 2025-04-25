@@ -764,6 +764,43 @@ def poly_mul(f, g):
             result[ef + eg] ^= gf_mul(cf, cg)
     return result
 
+# equivalent to poly_mul(f, g)[:cutoff]
+def poly_mul_low(f, g, cutoff):
+    cutoff = min(cutoff, len(f) + len(g) - 1)
+    result = [0] * cutoff
+    for ef, cf in enumerate(f):
+        for eg, cg in enumerate(g):
+            if ef + eg < cutoff:
+                result[ef + eg] ^= gf_mul(cf, cg)
+
+    # assert result == poly_mul(f, g)[:cutoff]
+
+    return result
+
+# equivalent to poly_mul(f, g)[cutoff:]
+def poly_mul_high(f, g, cutoff):
+    if len(f) + len(g) - 1 <= cutoff:
+        return POLY_ZERO[:]
+    result = [0] * (len(f) + len(g) - 1 - cutoff)
+    for ef, cf in enumerate(f):
+        for eg, cg in enumerate(g):
+            if ef + eg >= cutoff:
+                result[ef + eg - cutoff] ^= gf_mul(cf, cg)
+
+    # assert result == poly_mul(f, g)[cutoff:]
+
+    return result
+
+# equivalent to poly_mul(f, g)[c]
+def poly_mul_coef(f, g, c):
+    acc = 0
+    for i in range(max(0, c - len(g)), min(len(f), c + 1)):
+        acc ^= gf_mul(f[i], g[c - i])
+
+    # assert acc == poly_mul(f, g)[c]
+
+    return acc
+
 def poly_square(f):
     # much more efficient than poly_mul(f, f)
     # most of the terms cancel each other out via xor
@@ -796,7 +833,7 @@ def poly_modexp_simple(f, e, g):
     return prod
 
 
-def poly_modexp(f, e, g):
+def poly_modexp_fancy(f, e, g):
 
     orig_e = e
     orig_f = f[:]
@@ -834,14 +871,11 @@ def poly_modexp(f, e, g):
     return prod
 
 def mont_reduce(f, g, G):
-    # to see speed wins, the multiplications should be optimized to only
-    # compute the terms that are actually used. even then, there doesn't
-    # seem to be an obvious advantage.
-    m = poly_mul(f[:len(g)], G)[:len(g)]
-    t = poly_add(f, poly_mul(m, g))[len(g):]
+    m = poly_mul_low(f, G, len(g))
+    t = poly_add(f[len(g):], poly_mul_high(m, g, len(g)))
     t = poly_trim(t)
     assert len(t) <= len(g)
-    return poly_mod(t, g)
+    return t
 
 def into_mont(f, g, G):
     return poly_mod([0] * len(g) + f, g)
@@ -849,14 +883,34 @@ def into_mont(f, g, G):
 def from_mont(f, g, G):
     return mont_reduce(f, g, G)
 
-def poly_modexp_montgomery(f, e, g):
+def poly_modexp(f, e, g):
 
     orig_e = e
     orig_f = f[:]
 
     R = [0] * len(g) + [1]
-    G = poly_inverse(g, R)
 
+    # iteratively build G so that g * G == 1 (i.e. G is the inverse of g mod R)
+    # but do it faster than the extended euclidean algorithm by making
+    # use of the structure of R by calculating modulo progressively higher
+    # powers of f(x) = x.
+    # we know G[0] * g[0] == 1 so G[0] is just the inverse of g[0].
+    # then, every higher coefficient of gf_mul(g, G) must be zero.
+    # adding a new coefficient i to G only adds one new term to the sum
+    # constituting gf_mul(g,G)[i], namely gf_mul(G[i], g[0]).
+    # this allows us to calculate G[i]:
+    # 0 == poly_mul_coef(G[:i], g, i) ^ poly_mul(G[i], g[0])
+    # poly_mul_coef(G[:i], g, i) == poly_mul(G[i], g[0])
+    # gf_mul(poly_mul_coef(G[:i], g, i), gf_inverse(g[0])) == G[i]
+    # gf_mul(poly_mul_coef(G[:i], g, i), G[0]) == G[i]
+    #
+    # this might be related to Hensel's Lemma but honestly this just made sense
+    # and it seems to work, find a more authoritative source later if needed.
+    G = [gf_inverse(g[0])]
+    for i in range(1, len(g)):
+        G.append(gf_mul(poly_mul_coef(G, g, i), G[0]))
+
+    # assert G == poly_inverse(g, R)
     # assert poly_mod(poly_mul(g, G), R) == POLY_ONE
 
     fm = into_mont(f, g, G)
