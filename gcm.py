@@ -63,17 +63,71 @@ def gf_mul_noreduce(x, y):
 ALL64 = (1 << 64) - 1
 ALL128 = (1 << 128) - 1
 
-# https://web.archive.org/web/20190806061845/https://software.intel.com/sites/default/files/managed/72/cc/clmul-wp-rev-2.02-2014-04-20.pdf
+# reduce a less than 256 bit number by the GCM polynomial
+# this is just gf_reduce_64 adjusted to operate on 128 bits at a time instead of 64.
+# it does *exactly* the same thing.
+def gf_reduce(x):
+    X01 = x & ALL128
+    X23 = (x >> 128) & ALL128
+
+    A = X23 >> (63 + 64)
+    B = X23 >> (62 + 64)
+    C = X23 >> (57 + 64)
+
+    X3D = X23 ^ A ^ B ^ C
+
+    E = (X3D << 1) & ALL128
+    F = (X3D << 2) & ALL128
+    G = (X3D << 7) & ALL128
+
+    H = X3D ^ E ^ F ^ G
+
+    return X01 ^ H
+
+# algorithm 4 of https://web.archive.org/web/20190806061845/https://software.intel.com/sites/default/files/managed/72/cc/clmul-wp-rev-2.02-2014-04-20.pdf
+# also described by https://blog.quarkslab.com/reversing-a-finite-field-multiplication-optimization.html#gk2010
+# which credits https://doi.org/10.1016/j.ipl.2010.04.011
+# see gf_reduce for a version adapted to use 128 bit ints instead of 64 bit ones.
+def gf_reduce_64(x):
+    X0 = x & ALL64
+    x >>= 64
+    X1 = x & ALL64
+    x >>= 64
+    X2 = x & ALL64
+    x >>= 64
+    X3 = x & ALL64
+
+    X01 = (X1 << 64) | X0
+
+    A = X3 >> 63
+    B = X3 >> 62
+    C = X3 >> 57
+
+    D = X2 ^ A ^ B ^ C
+
+    X3D = (X3 << 64) | D
+
+    E = (X3D << 1) & ALL128
+    F = (X3D << 2) & ALL128
+    G = (X3D << 7) & ALL128
+
+    H = X3D ^ E ^ F ^ G
+
+    return X01 ^ H
+
+
 # this shows how to perform the modular reduction step in a cpu friendly way
 def gf_mul_intrinsic(x, y):
 
-    # Algorithm 2
+    # Algorithm 2 from # https://web.archive.org/web/20190806061845/https://software.intel.com/sites/default/files/managed/72/cc/clmul-wp-rev-2.02-2014-04-20.pdf
 
     A0 = x & ALL64
-    A1 = (x >> 64) & ALL64
+    x >>= 64
+    A1 = x & ALL64
 
     B0 = y & ALL64
-    B1 = (y >> 64) & ALL64
+    y >>= 64
+    B1 = y & ALL64
 
     if False:
         # one fewer clmul, at the expense of a lot of shuffling
@@ -94,51 +148,7 @@ def gf_mul_intrinsic(x, y):
             gf_mul_noreduce(A0, B0)
         )
 
-    # Algorithm 4
-
-    if False:
-        X0 = tmp & ALL64
-        tmp >>= 64
-        X1 = tmp & ALL64
-        tmp >>= 64
-        X2 = tmp & ALL64
-        tmp >>= 64
-        X3 = tmp & ALL64
-
-        X01 = (X1 << 64) | X0
-
-        A = X3 >> 63
-        B = X3 >> 62
-        C = X3 >> 57
-
-        D = X2 ^ A ^ B ^ C
-
-        X3D = (X3 << 64) | D
-
-        E = (X3D << 1) & ALL128
-        F = (X3D << 2) & ALL128
-        G = (X3D << 7) & ALL128
-
-        H = X3D ^ E ^ F ^ G
-
-        return X01 ^ H
-    else:
-        X01 = tmp & ALL128
-        X23 = (tmp >> 128) & ALL128
-
-        A = X23 >> (63 + 64)
-        B = X23 >> (62 + 64)
-        C = X23 >> (57 + 64)
-
-        X3D = X23 ^ A ^ B ^ C
-
-        E = (X3D << 1) & ALL128
-        F = (X3D << 2) & ALL128
-        G = (X3D << 7) & ALL128
-
-        H = X3D ^ E ^ F ^ G
-
-        return X01 ^ H
+    return gf_reduce(tmp)
 
 def gf_mul(x, y):
     # tmp = gf_mul_intrinsic(x,y)
@@ -202,6 +212,34 @@ def gf_mul_noreduce(x, y):
         x <<= 1
 
     return result
+
+MASK256_64 = 0x00000000_00000000_ffffffff_ffffffff_00000000_00000000_ffffffff_ffffffff
+MASK256_32 = 0x00000000_ffffffff_00000000_ffffffff_00000000_ffffffff_00000000_ffffffff
+MASK256_16 = 0x0000ffff_0000ffff_0000ffff_0000ffff_0000ffff_0000ffff_0000ffff_0000ffff
+MASK256_8 =  0x00ff00ff_00ff00ff_00ff00ff_00ff00ff_00ff00ff_00ff00ff_00ff00ff_00ff00ff
+MASK256_4 = 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f
+MASK256_2 = 0x33333333_33333333_33333333_33333333_33333333_33333333_33333333_33333333
+MASK256_1 = 0x55555555_55555555_55555555_55555555_55555555_55555555_55555555_55555555
+
+# equal to gf_mul(x, x), but potentially faster
+# note that a gf_mul implementation using a carryless multiply CPU intrinsic
+# will definitely beat this. but it should be faster than the naive gf_mul loop.
+def gf_square(x):
+    orig_x = x
+
+    x = (x | (x << 64)) & MASK256_64
+    x = (x | (x << 32)) & MASK256_32
+    x = (x | (x << 16)) & MASK256_16
+    x = (x | (x << 8)) & MASK256_8
+    x = (x | (x << 4)) & MASK256_4
+    x = (x | (x << 2)) & MASK256_2
+    x = (x | (x << 1)) & MASK256_1
+
+    x = gf_reduce(x)
+
+    # assert x == gf_mul(orig_x, orig_x)
+
+    return x
 
 def gf_inverse(x):
     assert x != 0, "zero has no inverse"
@@ -809,7 +847,7 @@ def poly_square(f):
     # most of the terms cancel each other out via xor
     result = [0] * (len(f) * 2 - 1)
     for e, c in enumerate(f):
-        result[2 * e] = gf_mul(c, c)
+        result[2 * e] = gf_square(c)
 
     # check it against the unoptimized implementation
     # assert result == poly_mul(f, f)
