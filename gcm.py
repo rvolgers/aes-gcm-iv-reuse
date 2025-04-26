@@ -765,10 +765,13 @@ def poly_mul(f, g):
     return result
 
 # equivalent to poly_mul(f, g)[:cutoff]
-def poly_mul_low(f, g, cutoff):
+def poly_mul_low(f, g, cutoff, f_is_square=False):
     cutoff = min(cutoff, len(f) + len(g) - 1)
     result = [0] * cutoff
     for ef, cf in enumerate(f):
+        if f_is_square and (ef % 2) == 1:
+            assert cf == 0
+            continue
         for eg, cg in enumerate(g):
             if ef + eg < cutoff:
                 result[ef + eg] ^= gf_mul(cf, cg)
@@ -870,8 +873,8 @@ def poly_modexp_fancy(f, e, g):
 
     return prod
 
-def mont_reduce(f, g, G):
-    m = poly_mul_low(f, G, len(g))
+def mont_reduce(f, g, G, is_square=False):
+    m = poly_mul_low(f, G, len(g), f_is_square = is_square)
     t = poly_add(f[len(g):], poly_mul_high(m, g, len(g)))
     t = poly_trim(t)
     assert len(t) <= len(g)
@@ -925,11 +928,11 @@ def poly_modexp(f, e, g):
         if e == 0:
             break
 
-        fm = mont_reduce(poly_square(fm), g, G)
+        fm = mont_reduce(poly_square(fm), g, G, is_square=True)
 
     result = from_mont(prod, g, G)
 
-    # assert result == poly_modexp_simple(orig_f, orig_e, g)
+    assert result == poly_modexp_simple(orig_f, orig_e, g)
 
     return result
 
