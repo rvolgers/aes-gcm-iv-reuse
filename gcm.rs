@@ -104,7 +104,7 @@ fn gf_mul(mut x: u128, mut y: u128) -> u128 {
 
     let mut result: u128 = 0;
 
-    while y != 0 {
+    for _ in 0..128 {
         if y & 1 == 1 {
             result ^= x;
         }
