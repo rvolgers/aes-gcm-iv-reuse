@@ -6,6 +6,7 @@
 #![feature(random)]
 #![feature(array_chunks)]
 #![feature(let_chains)]
+#![feature(bigint_helper_methods)]
 
 use std::iter;
 use std::convert::TryInto;
@@ -110,9 +111,10 @@ fn gf_mul(mut x: u128, mut y: u128) -> u128 {
         }
         y >>= 1;
 
-        let c = x >> 127;
-        x <<= 1;
-        if c == 1 {
+        let carry;
+        (x, carry) = x.carrying_add(x, false);
+
+        if carry {
             x ^= GF_POLY;
         }
     }
