@@ -49,6 +49,53 @@ fn gf_random() -> u128 {
     random()
 }
 
+fn gf_reduce(lo: u128, hi: u128) -> u128 {
+    let a = hi >> (128 - 1);
+    let b = hi >> (128 - 2);
+    let c = hi >> (128 - 7);
+
+    let d = hi ^ a ^ b ^ c;
+
+    let e = d << 1;
+    let f = d << 2;
+    let g = d << 7;
+
+    let h = d ^ e ^ f ^ g;
+
+    return lo ^ h;
+}
+
+#[cfg(all(
+    target_feature = "pclmulqdq",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
+fn gf_square(x: u128) -> u128 {
+    // if we have a clmul intrinsic, we can't do better than that
+    gf_mul(x, x)
+}
+
+#[cfg(not(all(
+    target_feature = "pclmulqdq",
+    any(target_arch = "x86", target_arch = "x86_64")
+)))]
+fn gf_square(x: u128) -> u128 {
+    // intersperses the bits of x with zero bits
+    fn spread64(x: u64) -> u128 {
+        let x = x as u128;
+        let x = (x | (x << 32)) & 0x00000000_ffffffff_00000000_ffffffff;
+        let x = (x | (x << 16)) & 0x0000ffff_0000ffff_0000ffff_0000ffff;
+        let x = (x | (x << 8)) & 0x00ff00ff_00ff00ff_00ff00ff_00ff00ff;
+        let x = (x | (x << 4)) & 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f;
+        let x = (x | (x << 2)) & 0x33333333_33333333_33333333_33333333;
+        let x = (x | (x << 1)) & 0x55555555_55555555_55555555_55555555;
+        x
+    }
+
+    let lo = spread64(x as u64);
+    let hi = spread64((x >> 64) as u64);
+    gf_reduce(lo, hi)
+}
+
 #[cfg(not(all(
     target_feature = "pclmulqdq",
     any(target_arch = "x86", target_arch = "x86_64")
@@ -386,7 +433,7 @@ fn poly_square(mut f: Vec<u128>) -> Vec<u128> {
     f.resize(orig_len * 2 - 1, 0);
     for i in (0..orig_len).rev() {
         let c = std::mem::take(&mut f[i]);
-        f[i * 2] = gf_mul(c, c);
+        f[i * 2] = gf_square(c);
     }
 
     f
