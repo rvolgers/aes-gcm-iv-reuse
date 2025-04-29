@@ -597,6 +597,9 @@ def poly_mul_coef(f, g, c):
     return acc
 
 def poly_square(f):
+    if len(f) == 0:
+        return []
+
     # much more efficient than poly_mul(f, f)
     # most of the terms cancel each other out via xor
     result = [0] * (len(f) * 2 - 1)
@@ -682,13 +685,15 @@ def poly_modexp(f, e, g):
 
     orig_e = e
     orig_f = f[:]
+    orig_g = g[:]
 
-    # this should happen basically never, but just to make sure we're covered.
-    if g[0] == 0:
-        print("WARNING: using fallback instead of montgomery")
-        return poly_modexp_simple(orig_f, orig_e, g)
+    n_zeroes = next(i for i, c in enumerate(g) if c != 0)
+    g = g[n_zeroes:]
+    Z = [0] * n_zeroes + [1]
 
     R = [0] * len(g) + [1]
+
+    # TODO look at https://cp-algorithms.com/algebra/montgomery_multiplication.html#fast-inverse-trick
 
     # iteratively build G so that g * G == 1 (i.e. G is the inverse of g mod R)
     # but do it faster than the extended euclidean algorithm by making
@@ -714,24 +719,49 @@ def poly_modexp(f, e, g):
     # assert poly_mod(poly_mul(g, G), R) == POLY_ONE
 
     fm = into_mont(f, g, G)
+    fz = f[:n_zeroes]
 
     prod = into_mont(POLY_ONE, g, G)
+    prod_z = [1] if n_zeroes > 0 else []
 
     while True:
         if e & 1:
             prod = mont_reduce(poly_mul(prod, fm), g, G)
+            prod_z = poly_mul_low(prod_z, fz, n_zeroes)
 
         e >>= 1
         if e == 0:
             break
 
         fm = mont_reduce(poly_square(fm), g, G, is_square=True)
+        fz = poly_square(fz)[:n_zeroes]
 
     result = from_mont(prod, g, G)
 
-    assert result == poly_modexp_simple(orig_f, orig_e, g)
+    if n_zeroes > 0:
+        # use chinese remainder theorem to combine result and prod_z
+
+        # compute A, inverse of Z mod g
+        A = poly_inverse(poly_mod(Z, g), g)
+
+        # compute B, inverse of g mod Z
+        B = poly_inverse(poly_mod(g, Z), Z)
+
+        result = poly_add(poly_mul(result, poly_mul(Z, A)), poly_mul(prod_z, poly_mul(g, B)))
+
+        result = poly_mod(result, orig_g)
+
+    tmp = poly_modexp_simple(orig_f, orig_e, orig_g)
+
+    # print('A: ' + repr(tmp))
+    # print('B: ' + repr(result))
+
+    assert result == tmp
 
     return result
+
+poly_modexp([5, 6], 0xffff, [1, 2, 3, 4])
+poly_modexp([7, 8], 0xffff, [0, 0, 1, 2])
 
 def poly_formal_derivative(f):
     # this is a bit subtle, but the way I understand it, the value to multiply the
