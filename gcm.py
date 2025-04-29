@@ -5,6 +5,7 @@ from collections import Counter
 from copy import deepcopy
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+import itertools
 from random import getrandbits
 from time import time
 from functools import reduce
@@ -285,7 +286,7 @@ def gf_inverse(x):
     return v1
 
 
-# factors of the group order
+# factors of the group order (calculated with GNU factor)
 GROUP_ORDER = (1 << 128) - 1
 GROUP_ORDER_FACTORS = [3, 5, 17, 257, 641, 65537, 274177, 6700417, 67280421310721]
 assert GROUP_ORDER == reduce(operator.mul, GROUP_ORDER_FACTORS, 1)
@@ -297,6 +298,7 @@ assert 3 * 5 * 17 * 257 * 65537 == 0xffffffff
 assert 3 * 5 * 17 * 257 * 65537 * 641 * 6700417 == 0xffffffffffffffff
 
 # these are the Fermat Numbers, with the first 5 being (the only known) Fermat Primes.
+# not to be confused with Mersenne primes (2**e-1), although 3 belongs to both.
 assert 3 == 0b11
 assert 5 == 0b101
 assert 17 == 0b10001
@@ -311,13 +313,75 @@ assert 274177 * 67280421310721 == 0b10000000000000000000000000000000000000000000
 # (Note, this also makes sense, as the 12 bytes of IV + 4 bytes of counter = 16 bytes)
 # So that means we only need the "nice" factors to produce roots of unity.
 
+def product(factors):
+    return reduce(operator.mul, factors, 1)
+
+# generic euler totient function, though optimized for no duplicate factors
+# order_factors is a sorted list of prime factors, such as [2, 2, 5]
+def euler_totient(order_factors):
+    prod = 1
+    prev = None
+    for p in order_factors:
+        assert prev is None or prev <= p, "list of factors must be sorted"
+        if p == prev:
+            prod *= p
+        else:
+            prod *= p - 1
+        prev = p
+    return prod
+
+# assert that the given element has the given multiplicative order
+# order_factors is a sorted list of prime factors of the expected group order, such as [2, 5] for 10
+# specialized to the GCM multiplicative group, which means no duplicated factors in the group order are possible
+def gf_assert_elem_order(elem, order_factors):
+    expected = product(order_factors)
+
+    # establish that the real order at least divides the expected one
+    assert gf_pow(elem, expected) == 1
+
+    # assert that all factors are necessary
+    prev = None
+    for p in order_factors:
+        assert prev is None or prev < p, "list of factors must be sorted and not contain duplicates"
+        assert gf_pow(elem, expected // p) != 1
+        prev = p
+
 # generator
 GF_GEN = 2
-assert not any(gf_pow(GF_GEN, x) == (1 << 128) - 1 for x in GROUP_ORDER_FACTORS)
+gf_assert_elem_order(GF_GEN, GROUP_ORDER_FACTORS)
 
-# non-trivial roots of unity (note that 1 is also technically a root of unity)
-ROOTS_OF_UNITY = [gf_pow(GF_GEN, GROUP_ORDER // x) for x in GROUP_ORDER_FACTORS]
-assert all(gf_pow(x, e) == 1 for x, e in zip(ROOTS_OF_UNITY, GROUP_ORDER_FACTORS))
+def num_ordinal(x):
+    s = str(x)
+    if s.endswith('1'): return s + "st"
+    elif s.endswith('2'): return s + "nd"
+    elif s.endswith('3'): return s + "rd"
+    return s + "th"
+
+FERMAT_PRIMES = [3, 5, 17, 257, 65537]
+assert all(p in GROUP_ORDER_FACTORS for p in FERMAT_PRIMES)
+
+tmp = gf_pow(GF_GEN, GROUP_ORDER // (3 * 5))
+
+gf_assert_elem_order(tmp, [3, 5])
+
+# show multiplicative group structure
+for i in range(1, 32):
+    factors = [p for j, p in enumerate(FERMAT_PRIMES) if (i >> j) & 1]
+    prod = product(factors)
+    tot = euler_totient(factors)
+    print(f"cyclic multiplicative subgroup of order {prod}:")
+    print(f"    factors of group order: {factors!s}")
+    print(f"    subgroup has {tot} generators")
+    print(f"    which means there are {tot} primitive {num_ordinal(prod)} roots of unity")
+
+# demonstrate how to find all nth roots of unity (in this case, all 8 15-th roots of unity)
+for i in range(1, 3):
+    for j in range(1, 5):
+        tmp = gf_pow(GF_GEN, (5 * i + 3 * j) * GROUP_ORDER // (3 * 5))
+        # print(f"{i} {j} {gf_pow(tmp, 3)} {gf_pow(tmp, 5)} {gf_pow(tmp, 3 * 5)}")
+        gf_assert_elem_order(tmp, [3, 5])
+
+
 
 
 ################################################################
