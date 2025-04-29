@@ -980,8 +980,18 @@ def poly_modexp(f, e, g):
     return result
 
 def poly_formal_derivative(f):
-    return [gf_mul(c, e) for e, c in enumerate(f)][1:]
-
+    # this is a bit subtle, but the way I understand it, the value to multiply the
+    # coefficient by is produced by "multiplying" e with the identity element, but
+    # with the usual definition of multiplication (which is "repeated addition"),
+    # not the multiplication operation as defined by gf_mul.
+    # because we are in characteristic 2, adding the identity element to itself
+    # produces 0, so the result of this "multiplication" is e % 2 (== e & 1).
+    # at this point we do have a field element so we could use gf_mul to combine
+    # it with the existing coefficient, except of course since we are mutiplying
+    # by either 0 or 1, we can do better than that.
+    # I used the reference given by Wikipedia on the Formal Derivative page:
+    # John B. Fraleigh; Victor J. Katz (2002). A First Course in Abstract Algebra. Pearson. p. 443.
+    return poly_trim([c if (e & 1) else 0 for e, c in enumerate(f)][1:])
 
 def poly_roots_bta(f):
     if len(f) == 2:
