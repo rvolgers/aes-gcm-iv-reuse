@@ -929,6 +929,11 @@ def poly_modexp(f, e, g):
     orig_e = e
     orig_f = f[:]
 
+    # this should happen basically never, but just to make sure we're covered.
+    if g[0] == 0:
+        print("WARNING: using fallback instead of montgomery")
+        return poly_modexp_simple(orig_f, orig_e, g)
+
     R = [0] * len(g) + [1]
 
     # iteratively build G so that g * G == 1 (i.e. G is the inverse of g mod R)
