@@ -194,7 +194,7 @@ def gf_pow(x, e):
         if e == 0:
             break
 
-        x = gf_mul(x, x)
+        x = gf_square(x)
 
     return prod
 
