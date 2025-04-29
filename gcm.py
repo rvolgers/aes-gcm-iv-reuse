@@ -360,10 +360,6 @@ def num_ordinal(x):
 FERMAT_PRIMES = [3, 5, 17, 257, 65537]
 assert all(p in GROUP_ORDER_FACTORS for p in FERMAT_PRIMES)
 
-tmp = gf_pow(GF_GEN, GROUP_ORDER // (3 * 5))
-
-gf_assert_elem_order(tmp, [3, 5])
-
 # show multiplicative group structure
 for i in range(1, 32):
     factors = [p for j, p in enumerate(FERMAT_PRIMES) if (i >> j) & 1]
@@ -375,10 +371,16 @@ for i in range(1, 32):
     print(f"    which means there are {tot} primitive {num_ordinal(prod)} roots of unity")
 
 # demonstrate how to find all nth roots of unity (in this case, all 8 15-th roots of unity)
+# TODO more optimizations
+base_1 = gf_pow(GF_GEN, GROUP_ORDER // (3 * 5))
 for i in range(1, 3):
+    base_2 = gf_pow(base_1, 5 * i)
     for j in range(1, 5):
-        tmp = gf_pow(GF_GEN, (5 * i + 3 * j) * GROUP_ORDER // (3 * 5))
-        # print(f"{i} {j} {gf_pow(tmp, 3)} {gf_pow(tmp, 5)} {gf_pow(tmp, 3 * 5)}")
+        base_3 = gf_pow(base_1, 3 * j)
+        tmp = gf_mul(base_2, base_3)
+        assert tmp == gf_pow(GF_GEN, (5 * i + 3 * j) * GROUP_ORDER // (3 * 5))
+        print(f"{i} {j} {gf_pow(tmp, 3)} {gf_pow(tmp, 5)} {gf_pow(tmp, 3 * 5)}")
+        print(f"{tmp} {gf_inverse(tmp)}")
         gf_assert_elem_order(tmp, [3, 5])
 
 
