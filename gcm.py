@@ -691,7 +691,7 @@ def poly_mul_coef(f, g, c):
     for i in range(0, last_f - first_f + 1):
         acc ^= gf_mul(f[first_f + i], g[last_g - i])
 
-    assert acc == poly_mul(f, g)[c]
+    # assert acc == poly_mul(f, g)[c]
 
     return acc
 
@@ -811,8 +811,8 @@ def poly_modexp(f, e, g):
     # this might be related to Hensel's Lemma but honestly this just made sense
     # and it seems to work, find a more authoritative source later if needed.
     G = [gf_inverse(g[0])]
-    for i in range(1, len(g)):
-        G.append(gf_mul(poly_mul_coef(G, g, i), G[0]))
+    while len(G) < len(g):
+        G.append(gf_mul(poly_mul_coef(G, g, len(G)), G[0]))
 
     # assert G == poly_inverse(g, R)
     # assert poly_mod(poly_mul(g, G), R) == POLY_ONE
@@ -842,25 +842,42 @@ def poly_modexp(f, e, g):
 
         # compute A, inverse of Z mod g
         A = poly_inverse(poly_mod(Z, g), g)
+        print('A: ' + repr(A))
 
         # compute B, inverse of g mod Z
-        B = poly_inverse(poly_mod(g, Z), Z)
+        # we can re-use the work done to calculate G
+        B = G[:n_zeroes]
+        while len(B) < n_zeroes:
+            B.append(gf_mul(poly_mul_coef(B, g, len(B)), B[0]))
 
-        result = poly_add(poly_mul(result, poly_mul(Z, A)), poly_mul(prod_z, poly_mul(g, B)))
+        # TODO the fact this is necessary implies we can save more work.
+        #      probably when the (remaining) g is small?
+        B = poly_trim(B)
+
+        # print('B: ' + repr(B))
+        # print("n_zeroes = " + str(n_zeroes))
+        # assert B == poly_inverse(poly_mod(g, Z), Z)
+        # assert poly_mod(poly_mul(B, g), Z) == POLY_ONE
+
+        result = poly_trim(poly_add(poly_mul(result, poly_mul(Z, A)), poly_mul(prod_z, poly_mul(g, B))))
 
         result = poly_mod(result, orig_g)
 
     tmp = poly_modexp_simple(orig_f, orig_e, orig_g)
 
-    # print('A: ' + repr(tmp))
-    # print('B: ' + repr(result))
+    # print('result: ' + repr(tmp))
+    # print('correct: ' + repr(result))
 
     assert result == tmp
 
     return result
 
-poly_modexp([5, 6], 0xffff, [1, 2, 3, 4])
-poly_modexp([7, 8], 0xffff, [0, 0, 1, 2])
+poly_modexp([1, 2], 0xffff, [1, 2, 3, 4])
+poly_modexp([3, 4], 0xffff, [0, 5, 6, 7])
+poly_modexp([5, 6], 0xffff, [0, 0, 8, 9])
+poly_modexp([7, 8], 0xffff, [0, 0, 0, 10])
+poly_modexp([7, 8], 0xffff, [0, 0, 0, 1])
+poly_modexp([0, 9], 0xffff, [0, 0, 11, 12])
 
 def poly_formal_derivative(f):
     # this is a bit subtle, but the way I understand it, the value to multiply the
