@@ -673,29 +673,27 @@ def poly_mul_coef(f, g, c):
     # note f,g and g,f
     # indices missing from the end of f means we must skip that many from the
     # start of g, and vice versa.
-    # NOTE 'first' values may be >= the len, indicating an empty slice.
-    #      this will result in the length calculation yielding < 0.
-    first_f = missing_g
-    first_g = missing_f
+    # NOTE 'start' values may be >= the len, indicating an empty slice.
+    #      this will result in the length calculation yielding <= 0.
+    f_start = missing_g
+    g_start = missing_f
 
     # normally the last index in both would be c, but some may be missing.
-    # NOTE 'last' values may be -1, indicating an empty slice.
-    #      this will result in the length calculation yielding < 0.
-    last_f = c - missing_f
-    last_g = c - missing_g
+    # we use end in the meaning of slice notation, so one past the last index.
+    f_end = c + 1 - missing_f
+    g_end = c + 1 - missing_g
 
-    # first and last are indices, so length of a slice is: last - first + 1
     # check that the slice in f is the same length as the slice in g
-    len_f = last_f - first_f + 1
-    len_g = last_g - first_g + 1
+    len_f = f_end - f_start
+    len_g = g_end - g_start
     assert len_f == len_g
 
     # check that indices sum to c when one of the slices is reversed
-    assert first_f + last_g == c and last_f + first_g == c
+    assert f_start + g_end - 1 == c and f_end - 1 + g_start == c
 
     acc = 0
     for i in range(0, len_f):
-        acc ^= gf_mul(f[first_f + i], g[last_g - i])
+        acc ^= gf_mul(f[f_start + i], g[g_end - 1 - i])
 
     assert acc == poly_mul(f, g)[c] if len_f > 0 else len(poly_mul(f, g)) <= c
 
