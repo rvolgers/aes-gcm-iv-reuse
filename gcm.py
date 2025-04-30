@@ -64,10 +64,86 @@ def gf_mul_noreduce(x, y):
 ALL64 = (1 << 64) - 1
 ALL128 = (1 << 128) - 1
 
+SYM_PRINTED = False
+
+# instrumented version of gf_reduce to show how input bits affect outputs
+def gf_reduce_instrumented(x):
+    # - only bits in the upper 128 can cause a modular reduction
+    # - the upper bit of the modular reduction does not matter,
+    #   since it is only updated after it is checked and also
+    #   it doesn't end up in the output
+    # - 
+
+    x_sym = [1 << i for i in range(256)]
+
+    sym_shl = lambda x, i: [0] * i + x
+    sym_shr = lambda x, i: x[i:]
+    sym_xor = lambda a, b: [i ^ j for i,j in itertools.zip_longest(a, b, fillvalue=0)]
+    sym_str = lambda x: ' ^ '.join(f"x{i}" for i in range(256) if (x >> i) & 1)
+
+    A = x >> (256 - 1)
+    A_sym = sym_shr(x_sym, 256 - 1)
+    B = x >> (256 - 2)
+    B_sym = sym_shr(x_sym, 256 - 2)
+    C = x >> (256 - 7)
+    C_sym = sym_shr(x_sym, 256 - 7)
+
+    # bits 128-254 affect bits 0-127 via poly bit 0
+    D = x >> (256 - 128)
+    D_sym = sym_shr(x_sym, 256 - 128)
+
+    # a polynomial multiplication of two 128 bit values is at most 255 bits
+    assert A == 0
+
+    X3D = A ^ B ^ C ^ D
+    X3D_sym = sym_xor(sym_xor(A_sym, B_sym), sym_xor(C_sym, D_sym))
+
+    E = X3D << 1
+    E_sym = sym_shl(X3D_sym, 1)
+    F = X3D << 2
+    F_sym = sym_shl(X3D_sym, 2)
+    G = X3D << 7
+    G_sym = sym_shl(X3D_sym, 7)
+
+    H = X3D ^ E ^ F ^ G
+    H_sym = sym_xor(sym_xor(X3D_sym, E_sym), sym_xor(F_sym, G_sym))
+
+    tmp = (x ^ H) & ALL128
+    tmp_sym = sym_xor(x_sym, H_sym)[:128]
+    global SYM_PRINTED
+    if SYM_PRINTED == False:
+        print(repr(tmp_sym))
+        print("\n".join(sym_str(x) for x in tmp_sym))
+        SYM_PRINTED = True
+
+    # assert tmp == gf_reduce_64(x)
+
+    return tmp
+
+# further streamlined gf_reduce_128 for python
+def gf_reduce(x):
+    A = x >> (256 - 1)
+    B = x >> (256 - 2)
+    C = x >> (256 - 7)
+    D = x >> (256 - 128)
+
+    X3D = A ^ B ^ C ^ D
+
+    E = X3D << 1
+    F = X3D << 2
+    G = X3D << 7
+    H = X3D ^ E ^ F ^ G
+
+    tmp = (x ^ H) & ALL128
+
+    # assert tmp == gf_reduce_64(x)
+
+    return tmp
+
 # reduce a less than 256 bit number by the GCM polynomial
 # this is just gf_reduce_64 adjusted to operate on 128 bits at a time instead of 64.
 # it does *exactly* the same thing.
-def gf_reduce(x):
+def gf_reduce_128(x):
     X01 = x & ALL128
     X23 = (x >> 128) & ALL128
 
