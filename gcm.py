@@ -664,11 +664,34 @@ def poly_mul_high(f, g, cutoff):
 
 # equivalent to poly_mul(f, g)[c]
 def poly_mul_coef(f, g, c):
-    acc = 0
-    for i in range(max(0, c - len(g)), min(len(f), c + 1)):
-        acc ^= gf_mul(f[i], g[c - i])
 
-    # assert acc == poly_mul(f, g)[c]
+    # we would like to iterate indices 0 < i <= c in both f and g.
+    # however, one or both may be too short to make that possible.
+    missing_f = max(0, c + 1 - len(f))
+    missing_g = max(0, c + 1 - len(g))
+
+    # note f,g and g,f
+    # indices missing from the end of f means we must skip that many from the
+    # start of g, and vice versa.
+    first_f = missing_g
+    first_g = missing_f
+
+    # normally the last index in both would be c, but some may be missing.
+    last_f = c - missing_f
+    last_g = c - missing_g
+
+    # first and last are indices, so length of a slice is: last - first + 1
+    # check that the slice in f is the same length as the slice in g
+    assert last_f - first_f + 1 == last_g - first_g + 1
+
+    # check that indices sum to c when one of the slices is reversed
+    assert first_f + last_g == c and last_f + first_g == c
+
+    acc = 0
+    for i in range(0, last_f - first_f + 1):
+        acc ^= gf_mul(f[first_f + i], g[last_g - i])
+
+    assert acc == poly_mul(f, g)[c]
 
     return acc
 
