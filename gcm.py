@@ -626,6 +626,7 @@ def poly_inverse(f, g):
     return poly_scalar_mul(t, gf_inverse(r[0]))
 
 def poly_mul(f, g):
+    if len(f) == 0 or len(g) == 0: return []
     result = [0] * (len(f) + len(g) - 1)
     for ef, cf in enumerate(f):
         for eg, cg in enumerate(g):
@@ -646,7 +647,7 @@ def poly_mul_low(f, g, cutoff, f_is_square=False):
 
     # assert result == poly_mul(f, g)[:cutoff]
 
-    return result
+    return poly_trim(result)
 
 # equivalent to poly_mul(f, g)[cutoff:]
 def poly_mul_high(f, g, cutoff):
@@ -660,7 +661,7 @@ def poly_mul_high(f, g, cutoff):
 
     # assert result == poly_mul(f, g)[cutoff:]
 
-    return result
+    return poly_trim(result)
 
 # equivalent to poly_mul(f, g)[c]
 def poly_mul_coef(f, g, c):
