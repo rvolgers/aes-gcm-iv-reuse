@@ -812,12 +812,20 @@ def poly_modexp(f, e, g):
     # poly_mul_coef(G[:i], g, i) == poly_mul(G[i], g[0])
     # gf_mul(poly_mul_coef(G[:i], g, i), gf_inverse(g[0])) == G[i]
     # gf_mul(poly_mul_coef(G[:i], g, i), G[0]) == G[i]
-    #
-    # this might be related to Hensel's Lemma but honestly this just made sense
-    # and it seems to work, find a more authoritative source later if needed.
     G = [gf_inverse(g[0])]
-    while len(G) < len(g):
-        G.append(gf_mul(poly_mul_coef(G, g, len(G)), G[0]))
+    # if len(g) == 1 then len(G) == 1, so we can skip some work.
+    # this is because multiplying two polynomials of length one gives a
+    # result of length 1 too, meaning no modular reduction needs to take
+    # place at all to find the unique B such that B * g == 1.
+    # note that this is purely an optimization, the loop would correctly
+    # yield a bunch of zeroes in that case that we then trim off.
+    # it's questionable whether this is really worth it as it's quite a
+    # niche optimization, but since I went to the trouble of discovering
+    # why G sometimes ended in a bunch of zeroes we might as well use it.
+    if len(g) > 1:
+        while len(G) < len(g):
+            G.append(gf_mul(poly_mul_coef(G, g, len(G)), G[0]))
+        G = poly_trim(G)
 
     # assert G == poly_inverse(g, R)
     # assert poly_mod(poly_mul(g, G), R) == POLY_ONE
@@ -838,7 +846,14 @@ def poly_modexp(f, e, g):
             break
 
         fm = mont_reduce(poly_square(fm), g, G, is_square=True)
-        fz = poly_square(fz)[:n_zeroes]
+
+        # TODO thinking about how this progresses, there is some serious
+        #      room for optimization here. after a log(n_zeroes) amount of
+        #      iterations, all but fz[0] will be zero. poly_trim partially
+        #      capitalizes on that, but there is more we could do for big
+        #      n_zeroes. might be better to just write a dedicated
+        #      poly_pow_low (by analogy with poly_mul_low).
+        fz = poly_trim(poly_square(fz)[:n_zeroes])
 
     result = from_mont(prod, g, G)
 
@@ -847,25 +862,35 @@ def poly_modexp(f, e, g):
 
         # compute A, inverse of Z mod g
         A = poly_inverse(poly_mod(Z, g), g)
+        result_A = poly_trim([0] * n_zeroes + poly_mul(result,  A))
+
         print('A: ' + repr(A))
 
+        # assert result_A == poly_trim(poly_mul(result, poly_mul(Z, A)))
+
         # compute B, inverse of g mod Z
-        # we can re-use the work done to calculate G
+        # basically truncates or adds additional terms to the existing
+        # calculation of G as needed, depending on which part of the
+        # original g was longer. see comments for G.
         B = G[:n_zeroes]
-        while len(B) < n_zeroes:
-            B.append(gf_mul(poly_mul_coef(B, g, len(B)), B[0]))
+        if len(g) != 1:
+            while len(B) < n_zeroes:
+                B.append(gf_mul(poly_mul_coef(B, g, len(B)), B[0]))
+            B = poly_trim(B)
+        result_B = poly_mul(prod_z, poly_mul(g, B))
 
-        # TODO the fact this is necessary implies we can save more work.
-        #      probably when the (remaining) g is small?
-        B = poly_trim(B)
-
-        # print('B: ' + repr(B))
+        print('B: ' + repr(B))
         # print("n_zeroes = " + str(n_zeroes))
         # assert B == poly_inverse(poly_mod(g, Z), Z)
         # assert poly_mod(poly_mul(B, g), Z) == POLY_ONE
 
-        result = poly_trim(poly_add(poly_mul(result, poly_mul(Z, A)), poly_mul(prod_z, poly_mul(g, B))))
+        print('result_A: ' + repr(result_A))
+        print('result_B: ' + repr(result_B))
+        print("orig_g: " + repr(orig_g))
 
+        result = poly_trim(poly_add(result_A, result_B))
+
+        print(f"len result = {len(result)} len orig_g = {len(orig_g)}")
         result = poly_mod(result, orig_g)
 
     tmp = poly_modexp_simple(orig_f, orig_e, orig_g)
