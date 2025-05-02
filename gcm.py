@@ -44,7 +44,7 @@ def gf_to_bytes(x):
     return _gf_bitswap(x).to_bytes(length=16, byteorder='little')
 
 def gf_random():
-    return gf_from_bytes(randbytes(16))
+    return getrandbits(128)
 
 # non-reducing version of gf_mul, used for experimentation
 def gf_mul_noreduce(x, y):
@@ -1226,7 +1226,7 @@ def recover_auth_secret(ciphertexts):
     # https://github.com/frereit/frereit.github.io/blob/main/wasm/cantor-zassenhaus/src/factorize.rs
     factors = [f]
     while len(factors) != len(f) - 1:
-        rand = [getrandbits(128) for i in range(len(f) - 1)]
+        rand = [gf_random() for i in range(len(f) - 1)]
         g = poly_modexp(rand, (1<<128) // 3, f)
 
         # (skipped code that does nothing for degree == 1)
