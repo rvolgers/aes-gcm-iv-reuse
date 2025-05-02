@@ -19,10 +19,16 @@ import operator
 # GF(2^128) with polynomial x^128 + x^7 + x^2 + x + 1
 GF_POLY = (1 << 128) | (1 << 7) | (1 << 2) | (1 << 1) | 1
 
-# used by _gf_bitswap.
-MASK4 = 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f  # 0b00001111 x 16
-MASK2 = 0x33333333_33333333_33333333_33333333  # 0b00110011 x 16
-MASK1 = 0x55555555_55555555_55555555_55555555  # 0b01010101 x 16
+# used by _gf_sqrt
+MASK128_64 = 0x00000000_00000000_ffffffff_ffffffff
+MASK128_32 = 0x00000000_ffffffff_00000000_ffffffff
+MASK128_16 = 0x0000ffff_0000ffff_0000ffff_0000ffff
+MASK128_8 = 0x00ff00ff_00ff00ff_00ff00ff_00ff00ff
+
+# used by _gf_bitswap and gf_sqrt
+MASK128_4 = 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f  # 0b00001111 x 16
+MASK128_2 = 0x33333333_33333333_33333333_33333333  # 0b00110011 x 16
+MASK128_1 = 0x55555555_55555555_55555555_55555555  # 0b01010101 x 16
 
 # used by gf_from_bytes / gf_to_bytes.
 # reverses the order of bits within each byte of a 128 bit value.
@@ -30,9 +36,9 @@ MASK1 = 0x55555555_55555555_55555555_55555555  # 0b01010101 x 16
 # it's possible to avoid this swapping by painstakingly adjusting all
 # operations to account for this, but that's annoying.
 def _gf_bitswap(x):
-    x = ((x & MASK4) << 4) | ((x >> 4) & MASK4)
-    x = ((x & MASK2) << 2) | ((x >> 2) & MASK2)
-    x = ((x & MASK1) << 1) | ((x >> 1) & MASK1)
+    x = ((x & MASK128_4) << 4) | ((x >> 4) & MASK128_4)
+    x = ((x & MASK128_2) << 2) | ((x >> 2) & MASK128_2)
+    x = ((x & MASK128_1) << 1) | ((x >> 1) & MASK128_1)
     return x
 
 def gf_from_bytes(b):
@@ -290,6 +296,7 @@ def gf_mul_noreduce(x, y):
 
     return result
 
+# used by gf_square
 MASK256_64 = 0x00000000_00000000_ffffffff_ffffffff_00000000_00000000_ffffffff_ffffffff
 MASK256_32 = 0x00000000_ffffffff_00000000_ffffffff_00000000_ffffffff_00000000_ffffffff
 MASK256_16 = 0x0000ffff_0000ffff_0000ffff_0000ffff_0000ffff_0000ffff_0000ffff_0000ffff
@@ -317,6 +324,42 @@ def gf_square(x):
     # assert x == gf_mul(orig_x, orig_x)
 
     return x
+
+GF_SQRT_2 = 0x24924924924924926db6db6db6db6da4
+assert GF_SQRT_2 == gf_pow(2, 1 << 127)
+assert gf_square(GF_SQRT_2) == 2
+
+# based on https://crypto.stackexchange.com/a/68505
+# which cites "Field inversion and point halving revisited" by Fong et al
+# at https://cacr.uwaterloo.ca/techreports/2003/corr2003-18.pdf
+# and also "Another Look at Square Roots and Traces (and Quadratic Equations) in Fields of Even Characteristic"
+# at https://eprint.iacr.org/2007/103.pdf
+def gf_sqrt(x):
+    # gather even bits into a 64 bit value
+    lo = x & MASK128_1
+    lo = (lo | (lo >> 1)) & MASK128_2
+    lo = (lo | (lo >> 2)) & MASK128_4
+    lo = (lo | (lo >> 4)) & MASK128_8
+    lo = (lo | (lo >> 8)) & MASK128_16
+    lo = (lo | (lo >> 16)) & MASK128_32
+    lo = (lo | (lo >> 32)) & MASK128_64
+
+    # gather odd bits into a 64 bit value
+    hi = (x >> 1) & MASK128_1
+    hi = (hi | (hi >> 1)) & MASK128_2
+    hi = (hi | (hi >> 2)) & MASK128_4
+    hi = (hi | (hi >> 4)) & MASK128_8
+    hi = (hi | (hi >> 8)) & MASK128_16
+    hi = (hi | (hi >> 16)) & MASK128_32
+    hi = (hi | (hi >> 32)) & MASK128_64
+
+    # note that when using CPU intrinsics, the fact that hi is only 64 bits
+    # could be used to avoid some of the work.
+    result = gf_mul(hi, GF_SQRT_2) ^ lo
+
+    # assert result == gf_pow(x, 1 << 127)
+
+    return result
 
 def gf_inverse(x):
     assert x != 0, "zero has no inverse"
