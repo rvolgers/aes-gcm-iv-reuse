@@ -477,7 +477,9 @@ def num_ordinal(x):
     return s + "th"
 
 FERMAT_PRIMES = [3, 5, 17, 257, 65537]
+FERMAT_NUMBERS = [(1 << (1 << b)) | 1 for b in range(7)]
 assert all(p in GROUP_ORDER_FACTORS for p in FERMAT_PRIMES)
+assert all(p in FERMAT_NUMBERS for p in FERMAT_PRIMES)
 
 # show multiplicative group structure
 for i in range(1, 32):
@@ -488,6 +490,9 @@ for i in range(1, 32):
     print(f"    factors of group order: {factors!s}")
     print(f"    subgroup has {tot} generators")
     print(f"    which means there are {tot} primitive {num_ordinal(prod)} roots of unity")
+    example = gf_pow(GF_GEN, sum(1 * prod // f for f in factors) * GROUP_ORDER // prod)
+    gf_assert_elem_order(example, factors)
+    print(f"    example: {example}")
 
 # demonstrate how to find all nth roots of unity (in this case, all 8 15-th roots of unity)
 # TODO more optimizations
@@ -498,10 +503,43 @@ for i in range(1, 3):
         base_3 = gf_pow(base_1, 3 * j)
         tmp = gf_mul(base_2, base_3)
         assert tmp == gf_pow(GF_GEN, (5 * i + 3 * j) * GROUP_ORDER // (3 * 5))
-        print(f"{i} {j} {gf_pow(tmp, 3)} {gf_pow(tmp, 5)} {gf_pow(tmp, 3 * 5)}")
-        print(f"{tmp} {gf_inverse(tmp)}")
+        # print(f"{i} {j} {gf_pow(tmp, 3)} {gf_pow(tmp, 5)} {gf_pow(tmp, 3 * 5)}")
+        # print(f"{tmp} {gf_inverse(tmp)}")
         gf_assert_elem_order(tmp, [3, 5])
 
+# recalculating the exponent every time is a really bad way to do this,
+# but it makes for a nice api. fine as long as it's not used much.
+def gf_nth_root(x, e):
+    assert all(e % p != 0 for p in GROUP_ORDER_FACTORS)
+
+    e_inv = pow(e, euler_totient(GROUP_ORDER_FACTORS) - 1, GROUP_ORDER)
+
+    return gf_pow(x, e_inv)
+
+GF_BIT_POWERS = [
+    [gf_pow(1 << b, 1 << (1 << e)) for b in range(128)]
+    for e in range(8)
+]
+
+# show how to calculate exponentiation by power of two as a sum of bit lookups
+# this uses freshman's dream
+n = 151057730537251302588469035879534785155
+gf_assert_elem_order(n, [65537])
+
+acc = 0
+for i in range(128):
+    if (n >> i) & 1:
+        acc ^= GF_BIT_POWERS[4][i]
+
+assert acc == gf_pow(n, 0x10000)
+assert acc == gf_inverse(n)
+
+
+for i in range(0,7):
+    e = 1 << (1 << i)
+    e_inv = pow(e, euler_totient(GROUP_ORDER_FACTORS) - 1, GROUP_ORDER)
+    print(f"e = 2 ** (2 ** {i}) = 2 ** {2 ** i} = {hex(e)}, e_inv = {hex(e_inv)} = 2 ** {e_inv.bit_length() - 1}")
+    assert gf_pow(gf_pow(12345, e), e_inv) == 12345
 
 
 
