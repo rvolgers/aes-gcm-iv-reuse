@@ -534,7 +534,31 @@ for i in range(128):
 assert acc == gf_pow(n, 0x10000)
 assert acc == gf_inverse(n)
 
+# if we didn't already know the order of n, what would this lookup tell us?
+# - if the order divides 0xffff, gf_pow(n, 0x10000) == n
+# - if the order was 0x10001, gf_pow(n, 0x10000) == gf_inverse(n)
 
+n = 151057730537251302588469035879534785155
+n_inv = gf_inverse(n)
+x = n
+for i in range(128):
+    if i > 0:
+        order = None
+        if x == n:
+            order = (1 << i) - 1
+        elif x == n_inv:
+            order = (1 << i) + 1
+
+        if order is not None:
+            factors = [p for p in GROUP_ORDER_FACTORS if order % p == 0]
+            remainder = order // product(factors)
+            print(f"order of n divides {hex(order)} {factors!r} {hex(remainder) if remainder != 1 else ''}")
+            assert 0x10001 in factors
+
+    x = gf_square(x)
+
+# the exponents needed to calculate the nth-roots for n = 2**2**i
+# turn out to also be powers of two
 for i in range(0,7):
     e = 1 << (1 << i)
     e_inv = pow(e, euler_totient(GROUP_ORDER_FACTORS) - 1, GROUP_ORDER)
