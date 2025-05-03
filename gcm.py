@@ -743,6 +743,34 @@ def poly_mul_coef(f, g, c):
 
     return acc
 
+# calculate first `cutoff` coefficients of f**e
+def poly_exp_low(f, e, cutoff):
+
+    if cutoff == 0: return []
+    assert cutoff > 0
+
+    f = f[:cutoff]
+    prod = None
+
+    while True:
+        if e & 1:
+            if prod is None:
+                prod = f[:cutoff]
+            else:
+                prod = poly_mul_low(prod, f, cutoff)
+
+        e >>= 1
+        if e == 0:
+            break
+
+        # TODO thinking about how this progresses, there is some serious
+        #      room for optimization here. after a log(n_zeroes) amount of
+        #      iterations, all but f[0] will be zero. poly_trim partially
+        #      capitalizes on that, but there is more we could do.
+        f = poly_trim(poly_square(f)[:cutoff])
+
+    return prod
+
 def poly_square(f):
     if len(f) == 0:
         return []
@@ -834,13 +862,12 @@ def poly_modexp(f, e, g):
     orig_f = f[:]
     orig_g = g[:]
 
+    # if g is divisible by x (in other words, starts with one or more zeroes)
+    # then divide that out for now, we will put it back later via CRT.
     n_zeroes = next(i for i, c in enumerate(g) if c != 0)
     g = g[n_zeroes:]
-    Z = [0] * n_zeroes + [1]
 
     R = [0] * len(g) + [1]
-
-    # TODO look at https://cp-algorithms.com/algebra/montgomery_multiplication.html#fast-inverse-trick
 
     # iteratively build G so that g * G == 1 (i.e. G is the inverse of g mod R)
     # but do it faster than the extended euclidean algorithm by making
@@ -874,15 +901,15 @@ def poly_modexp(f, e, g):
     # assert poly_mod(poly_mul(g, G), R) == POLY_ONE
 
     fm = into_mont(f, g, G)
-    fz = f[:n_zeroes]
 
-    prod = into_mont(POLY_ONE, g, G)
-    prod_z = [1] if n_zeroes > 0 else []
+    prod = None
 
     while True:
         if e & 1:
-            prod = mont_reduce(poly_mul(prod, fm), g, G)
-            prod_z = poly_mul_low(prod_z, fz, n_zeroes)
+            if prod is None:
+                prod = fm
+            else:
+                prod = mont_reduce(poly_mul(prod, fm), g, G)
 
         e >>= 1
         if e == 0:
@@ -890,17 +917,14 @@ def poly_modexp(f, e, g):
 
         fm = mont_reduce(poly_square(fm), g, G, is_square=True)
 
-        # TODO thinking about how this progresses, there is some serious
-        #      room for optimization here. after a log(n_zeroes) amount of
-        #      iterations, all but fz[0] will be zero. poly_trim partially
-        #      capitalizes on that, but there is more we could do for big
-        #      n_zeroes. might be better to just write a dedicated
-        #      poly_pow_low (by analogy with poly_mul_low).
-        fz = poly_trim(poly_square(fz)[:n_zeroes])
-
     result = from_mont(prod, g, G)
 
     if n_zeroes > 0:
+        Z = [0] * n_zeroes + [1]
+
+        # perform exponentiation modulo Z
+        prod_z = poly_exp_low(orig_f, orig_e, n_zeroes)
+
         # use chinese remainder theorem to combine result and prod_z
 
         # compute A, inverse of Z mod g
