@@ -404,6 +404,133 @@ def gf_inverse(x):
 
     return v1
 
+# some small irreducble polynomials over GF2
+# https://oeis.org/A014580
+GF_IRREDUCIBLES = [2, 3, 7, 11, 13, 19, 25, 31, 37, 41, 47, 55, 59, 61, 67, 73, 87, 91, 97, 103, 109, 115, 117, 131, 137, 143, 145, 157, 167, 171, 185, 191, 193, 203, 211, 213, 229, 239, 241, 247, 253, 283, 285, 299, 301, 313, 319, 333, 351, 355, 357, 361, 369, 375]
+
+def gf_divmod(x, y):
+    q = 0
+    r = x
+
+    s = r.bit_length() - y.bit_length()
+    while s >= 0:
+        r ^= y << s
+        q ^= 1 << s
+        s = r.bit_length() - y.bit_length()
+
+    return (q, r)
+
+def gf_mod(x, y):
+    return gf_divmod(x, y)[1]
+
+def gf_div(x, y):
+    q, r = gf_divmod(x, y)
+    assert r == 0
+    return q
+
+def gf_gcd(x, y):
+    (u1, u2, u3) = (0, 1, y)
+    (v1, v2, v3) = (1, 0, x)
+
+    while v3 != 0:
+        # assert gf_mul(x, u1) ^ gf_mul(y, u2) == u3
+        # assert gf_mul(x, v1) ^ gf_mul(y, v2) == v3
+
+        (t1, t2, t3) = (u1, u2, u3)
+        q = u3.bit_length() - v3.bit_length()
+        if q >= 0:
+            t1 ^= v1 << q
+            t2 ^= v2 << q
+            t3 ^= v3 << q
+        (u1, u2, u3) = (v1, v2, v3)
+        (v1, v2, v3) = (t1, t2, t3)
+
+    # assert gf_mul(gf_mul(gf_div(x, u3), gf_div(y, u3)), gf_square(u3)) == gf_mul(x, y)
+
+    return u3
+
+def gf_formal_derivative(x):
+    return (x >> 1) & MASK128_1
+
+# Berlekamp factorization, implemented according to TAOCP vol II 4.6.2 (p. 439)
+def gf_factor(u):
+    # make u square free
+    square = gf_gcd(u, gf_formal_derivative(u))
+    square_factors = []
+    if square != 1:
+        square_factors = gf_factor(gf_sqrt(square))
+        u = gf_div(u, square)
+        if u == 1:
+            return square_factors + square_factors
+
+    # n is the degree of u
+    n = u.bit_length()
+
+    # Q is logically an nxn binary matrix.
+    # the values in each row are the coefficients of the polynomial
+    # x ** (2 * k) mod u, where k is the row number. so we just take
+    # the integer representation of that polynomial as the row.
+    # note that in the first row, x ** (2 * 0) == x ** 0 == 1
+    # TODO calculate iteratively instead of repeating work
+    Q = [gf_mod(1 << (2 * k), u) for k in range(n)]
+
+    # subtract identity matrix
+    for i in range(n):
+        Q[i] ^= 1 << i
+
+    c = [-1] * n
+    r = 0
+    v = [None] # v[1..r]
+    for k in range(n):
+        j = next((j for j in range(n) if Q[k] & (1 << j) != 0 and c[j] < 0), None)
+        if j is not None:
+            for i in range(n):
+                if i == j: continue
+                # this if is logically a multiply
+                if (Q[k] >> i) & 1 != 0:
+                    for foo in range(n):
+                        # add column j to column i
+                        Q[foo] ^= ((Q[foo] >> j) & 1) << i
+            c[j] = k
+        else:
+            r += 1
+            v_r = 0
+            for j in range(n):
+                s = next((s for s in range(k) if c[s] == j and c[s] >= 0), None)
+                v_r <<= 1
+                if s is not None:
+                    v_r |= (Q[k] >> s) & 1
+                elif j == k:
+                    v_r |= 1
+                else:
+                    v_r |= 0 # nop
+            v.append(v_r)
+
+    factors = [u]
+    for v_i in v[1:]:
+        for s in [0, 1]:
+            for f in factors[:]:
+                tmp = gf_gcd(f, v_i ^ s)
+                if tmp != 1 and tmp != f:
+                    factors.remove(f)
+                    factors.extend([
+                        tmp,
+                        gf_div(f, tmp)
+                    ])
+
+    return square_factors + square_factors + factors
+
+for i in range(50):
+    x = gf_random()
+    factors = gf_factor(x)
+    print(f"factors of {hex(x)}: {', '.join(hex(f) for f in factors)}")
+    tmp = x
+    for f in factors:
+        q, r = gf_divmod(tmp, f)
+        assert r == 0
+        tmp = q
+    assert q == 1
+
 
 # factors of the group order (calculated with GNU factor)
 GROUP_ORDER = (1 << 128) - 1
