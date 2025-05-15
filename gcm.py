@@ -512,36 +512,39 @@ def gf_factor(u):
     for i in range(n):
         Q[i] ^= 1 << i
 
-    # original description uses -1 as a sentinel, we use None instead
+    # original description uses -1 as a sentinel for when c[i] is not set
+    # we use a separate c_set bitmap for that.
+    # additionally, c itself has key and value reversed to optimize lookups.
     c = [None] * n
+    c_set = 0
     # we skip the 1st iteration which sets the first v to 1 and increments r,
     # as suggested in the explanation.
     # we also changed v to be zero-indexed. then, `r` is replaced with len(v).
     v = [1]
     for k in range(1, n):
-        j = next((j for j in range(n) if Q[k] & (1 << j) != 0 and c[j] is None), None)
+        Q_k = Q[k]
+        j = next((j for j in range(n) if (Q_k >> j) & 1 != 0 and (c_set >> j) & 1 == 0), None)
         if j is not None:
-            for i in range(n):
-                if i == j: continue
-                # this if is logically a multiply
-                if (Q[k] >> i) & 1 != 0:
-                    # assert that it's okay to skip some work
-                    # assert all((Q[foo] >> j) & 1 == 0 for foo in range(k))
-                    for foo in range(k, n):
-                        # add column j to column i
-                        Q[foo] ^= ((Q[foo] >> j) & 1) << i
-            c[j] = k
+            # this has been substantially optimized by lifting the very inner
+            # loop to the top and optimizing a lot of binary logic from there.
+            # the `i` in the current code is unrelated to the i in the text.
+
+            # bit j is currently 1 in Q_k (we check it when finding j)
+            # we don't want to affect it in Q[i], so remove it.
+            bit_j = 1 << j
+            Q_k_without_bit_j =  Q_k ^ bit_j
+            for i in range(k, n):
+                if Q[i] & bit_j == 0: continue
+                Q[i] ^= Q_k_without_bit_j
+            c_set |= bit_j
+            c[k] = j
         else:
-            v_r = 0
-            for j in range(n):
-                s = next((s for s in range(n) if c[s] == j), None)
+            # we'll build it in reverse, so this bit is bit k
+            v_r = 1
+            for s in reversed(c[:k]):
+                v_r <<= 1
                 if s is not None:
-                    bit = (Q[k] >> s) & 1
-                elif j == k:
-                    bit = 1
-                else:
-                    bit = 0 # nop
-                v_r |= bit << j
+                    v_r |= (Q_k >> s) & 1
             v.append(v_r)
 
         # loop invariant: for every v_i, v_i * Q == 0
