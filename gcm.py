@@ -478,6 +478,13 @@ def bitlist_to_int(x):
 
 # Berlekamp factorization, implemented according to TAOCP vol II 4.6.2 (p. 439)
 def gf_factor(u):
+    # divide by x as many times as possible, as an optimization.
+    # this is extremely cheap compared to letting the regular code handle it.
+    x_factors = []
+    while u & 1 == 0:
+        u >>= 1
+        x_factors.append(0b10)
+
     # make u square free
     square = gf_gcd(u, gf_formal_derivative(u))
     square_factors = []
@@ -485,7 +492,7 @@ def gf_factor(u):
         square_factors = gf_factor(gf_sqrt(square))
         u = gf_div(u, square)
         if u == 1:
-            return square_factors + square_factors
+            return x_factors + square_factors + square_factors
 
     # n is the degree of u
     n = u.bit_length()
@@ -495,18 +502,24 @@ def gf_factor(u):
     # x ** (2 * k) mod u, where k is the row number. so we just take
     # the integer representation of that polynomial as the row.
     # note that in the first row, x ** (2 * 0) == x ** 0 == 1
-    # TODO calculate iteratively instead of repeating work
-    Q = [gf_mod(1 << (2 * k), u) for k in range(n)]
+    Q = [1]
+    for k in range(1, n):
+        Q.append(gf_mod(Q[-1] << 2, u))
+
+    # assert Q == [gf_mod(1 << (2 * k), u) for k in range(n)]
 
     # subtract identity matrix
     for i in range(n):
         Q[i] ^= 1 << i
 
-    c = [-1] * n
-    r = 0
-    v = [None] # v[1..r]
-    for k in range(n):
-        j = next((j for j in range(n) if Q[k] & (1 << j) != 0 and c[j] < 0), None)
+    # original description uses -1 as a sentinel, we use None instead
+    c = [None] * n
+    # we skip the 1st iteration which sets the first v to 1 and increments r,
+    # as suggested in the explanation.
+    # we also changed v to be zero-indexed. then, `r` is replaced with len(v).
+    v = [1]
+    for k in range(1, n):
+        j = next((j for j in range(n) if Q[k] & (1 << j) != 0 and c[j] is None), None)
         if j is not None:
             for i in range(n):
                 if i == j: continue
@@ -519,10 +532,9 @@ def gf_factor(u):
                         Q[foo] ^= ((Q[foo] >> j) & 1) << i
             c[j] = k
         else:
-            r += 1
             v_r = 0
             for j in range(n):
-                s = next((s for s in range(n) if c[s] == j and c[s] >= 0), None)
+                s = next((s for s in range(n) if c[s] == j), None)
                 if s is not None:
                     bit = (Q[k] >> s) & 1
                 elif j == k:
@@ -535,7 +547,7 @@ def gf_factor(u):
         # loop invariant: for every v_i, v_i * Q == 0
         # we can use a generic matmul even though we want binary matmul,
         # because bitlist_to_int discards all but the low bit.
-        # for v_i in v[1:]:
+        # for v_i in v:
         #     tmp = mat_mul([int_to_bitlist(v_i, n)], [int_to_bitlist(x, n) for x in Q])
         #     tmp = bitlist_to_int(tmp[0])
         #     assert tmp == 0
@@ -545,20 +557,27 @@ def gf_factor(u):
     # print("")
 
     factors = [u]
-    for v_i in v[1:]:
-        for s in [0, 1]:
-            for f in factors[:]:
-                tmp = gf_gcd(f, v_i ^ s)
-                if tmp != 1 and tmp != f:
-                    factors.remove(f)
-                    factors.extend([
-                        tmp,
-                        gf_div(f, tmp)
-                    ])
+    for v_i in v:
+        for f in factors[:]:
+            # early exit if we've found all the factors
+            if len(factors) == len(v): break
 
-    assert len(factors) == r
+            # we are supposed to iterate over v_i - {0,1}
+            # however we can skip one of them because:
+            # assert u == gf_mul(gf_gcd(v_r ^ 0, u), gf_gcd(v_r ^ 1, u))
+            # (see B4 in the cited explanation from TAOCP)
+            tmp = gf_gcd(f, v_i)
+            if tmp != 1 and tmp != f:
+                factors.remove(f)
+                factors.extend([
+                    tmp,
+                    gf_div(f, tmp)
+                ])
 
-    return square_factors + square_factors + factors
+    # NOTE if you uncomment, probably remove the early-out in the loop above
+    # assert len(factors) == len(v)
+
+    return x_factors + square_factors + square_factors + factors
 
 try:
     from sage.all import GF, Integer, PolynomialRing
