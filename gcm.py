@@ -456,6 +456,26 @@ def gf_gcd(x, y):
 def gf_formal_derivative(x):
     return (x >> 1) & MASK128_1
 
+def mat_mul(a, b):
+    assert len(a[0]) == len(b)
+    result = []
+    for i in range(len(a)):
+        row = []
+        for j in range(len(b[0])):
+            x = 0
+            for k in range(len(b)):
+                x += a[i][k] * b[k][j]
+            row.append(x)
+        result.append(row)
+    return result
+
+def int_to_bitlist(x, n = None):
+    if n is None: n = x.bit_length()
+    return [(x >> i) & 1 for i in range(n)]
+
+def bitlist_to_int(x):
+    return sum((b & 1) << i for i, b in enumerate(x))
+
 # Berlekamp factorization, implemented according to TAOCP vol II 4.6.2 (p. 439)
 def gf_factor(u):
     # make u square free
@@ -492,7 +512,9 @@ def gf_factor(u):
                 if i == j: continue
                 # this if is logically a multiply
                 if (Q[k] >> i) & 1 != 0:
-                    for foo in range(n):
+                    # assert that it's okay to skip some work
+                    # assert all((Q[foo] >> j) & 1 == 0 for foo in range(k))
+                    for foo in range(k, n):
                         # add column j to column i
                         Q[foo] ^= ((Q[foo] >> j) & 1) << i
             c[j] = k
@@ -500,15 +522,27 @@ def gf_factor(u):
             r += 1
             v_r = 0
             for j in range(n):
-                s = next((s for s in range(k) if c[s] == j and c[s] >= 0), None)
-                v_r <<= 1
+                s = next((s for s in range(n) if c[s] == j and c[s] >= 0), None)
                 if s is not None:
-                    v_r |= (Q[k] >> s) & 1
+                    bit = (Q[k] >> s) & 1
                 elif j == k:
-                    v_r |= 1
+                    bit = 1
                 else:
-                    v_r |= 0 # nop
+                    bit = 0 # nop
+                v_r |= bit << j
             v.append(v_r)
+
+        # loop invariant: for every v_i, v_i * Q == 0
+        # we can use a generic matmul even though we want binary matmul,
+        # because bitlist_to_int discards all but the low bit.
+        # for v_i in v[1:]:
+        #     tmp = mat_mul([int_to_bitlist(v_i, n)], [int_to_bitlist(x, n) for x in Q])
+        #     tmp = bitlist_to_int(tmp[0])
+        #     assert tmp == 0
+
+    # print("Q:")
+    # print('\n'.join(''.join(map(str, int_to_bitlist(r, n))) for r in Q))
+    # print("")
 
     factors = [u]
     for v_i in v[1:]:
@@ -521,6 +555,8 @@ def gf_factor(u):
                         tmp,
                         gf_div(f, tmp)
                     ])
+
+    assert len(factors) == r
 
     return square_factors + square_factors + factors
 
@@ -559,6 +595,7 @@ for i in range(50):
         tmp = [p for p, e in tmp for p in [gf_from_sage(p)] * e]
         tmp.sort()
         print(f"sage: {', '.join(hex(f) for f in tmp)}")
+        assert tmp == factors
 
 
 # factors of the group order (calculated with GNU factor)
