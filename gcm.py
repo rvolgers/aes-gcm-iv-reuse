@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# to run with sage support:
+# PYTHONPATH=/usr/lib/python3/dist-packages ~/src/sage/sage ./gcm.py
+# (the PYTHONPATH is needed to pick up modules like cryptography)
+
 # only used for a basic AES-ECB primitive
 from collections import Counter
 from copy import deepcopy
@@ -520,16 +524,41 @@ def gf_factor(u):
 
     return square_factors + square_factors + factors
 
+try:
+    from sage.all import GF, Integer, PolynomialRing
+    HAS_SAGE = True
+    tmp = [Integer((GF_POLY >> i) & 1) for i in range(GF_POLY.bit_length())]
+    SAGE_GF = GF(Integer(2)**Integer(128), modulus=tmp, names='b')
+    SAGE_POLY = PolynomialRing(SAGE_GF, 'x')
+
+    def gf_to_sage(x): return SAGE_GF.from_integer(x)
+    def gf_from_sage(f): return f.to_integer()
+    def poly_to_sage(f): return SAGE_POLY([gf_to_sage(x) for x in f])
+except ImportError:
+    HAS_SAGE = False
+    print("No sage support")
+
 for i in range(50):
     x = gf_random()
     factors = gf_factor(x)
-    print(f"factors of {hex(x)}: {', '.join(hex(f) for f in factors)}")
+    factors.sort()
+    print(f"factors of {hex(x)}:")
+    print(f"mine: {', '.join(hex(f) for f in factors)}")
     tmp = x
     for f in factors:
         q, r = gf_divmod(tmp, f)
         assert r == 0
         tmp = q
     assert q == 1
+    if HAS_SAGE:
+        tmp = gf_to_sage(x).polynomial().factor()
+        assert tmp.unit() == 1
+        # polynomials back to field elements
+        tmp = [(SAGE_GF(p.list()), e) for p, e in tmp]
+        # field elements with multiplicties to flat list of integers
+        tmp = [p for p, e in tmp for p in [gf_from_sage(p)] * e]
+        tmp.sort()
+        print(f"sage: {', '.join(hex(f) for f in tmp)}")
 
 
 # factors of the group order (calculated with GNU factor)
