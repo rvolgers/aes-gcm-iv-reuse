@@ -495,7 +495,7 @@ def gf_factor(u):
             return x_factors + square_factors + square_factors
 
     # n is the degree of u
-    n = u.bit_length()
+    n = u.bit_length() - 1
 
     # Q is logically an nxn binary matrix.
     # the values in each row are the coefficients of the polynomial
