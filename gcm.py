@@ -508,9 +508,19 @@ def gf_factor(u):
 
     # assert Q == [gf_mod(1 << (2 * k), u) for k in range(n)]
 
+    # index where modular reduction kicks in (divide by 2, rounding up)
+    # not used by the algorithm itself. we use this to demonstrate that
+    # the first `simple_part` loop iterations are very deterministic
+    # and could be skipped (along with the first half of Q) if desired.
+    simple_part = n // 2 + (n & 1)
+    assert all(Q[k] == 1 << (2 * k) for k in range(simple_part))
+    assert all(Q[k] != 1 << (2 * k) for k in range(simple_part, n))
+
     # subtract identity matrix
     for i in range(n):
         Q[i] ^= 1 << i
+
+    orig_Q = Q[:]
 
     # original description uses -1 as a sentinel for when c[i] is not set
     # we use a separate c_set bitmap for that.
@@ -523,7 +533,25 @@ def gf_factor(u):
     v = [1]
     for k in range(1, n):
         Q_k = Q[k]
-        j = next((j for j in range(n) if (Q_k >> j) & 1 != 0 and (c_set >> j) & 1 == 0), None)
+        if 1 <= k < simple_part:
+            # show that the first simple_part rows are perfectly deterministic
+            assert Q_k == (1 << k) | (1 << (2 * k))
+        elif k == simple_part:
+            # demonstrate we can replicate the effects of the first simple_part
+            # iterations on later elements without too much trouble.
+
+            # start with Q[k] without the effects of all previous loops iters
+            tmp = orig_Q[k]
+            # replicate the effects of all iterations up to simple_part
+            for i in range(1, simple_part):
+                # xor bit 2*i with bit i
+                tmp ^= (((tmp >> i) & 1) << (2 * i))
+            assert tmp == Q_k
+
+        j = next((j for j in (range(n)) if (Q_k >> j) & 1 != 0 and (c_set >> j) & 1 == 0), None)
+        if 1 <= k < simple_part:
+            assert j == k
+
         if j is not None:
             # this has been substantially optimized by lifting the very inner
             # loop to the top and optimizing a lot of binary logic from there.
@@ -539,6 +567,11 @@ def gf_factor(u):
             c_set |= bit_j
             c[k] = j
         else:
+            # column indices are also deterministic for the simple part
+            # NOTE: this does NOT apply to c[0], which is left unset and
+            #       is usually (always?) set right after the simple part.
+            assert c[1:simple_part] == list(range(1, simple_part))
+
             # we'll build it in reverse, so this bit is bit k
             v_r = 1
             for s in reversed(c[:k]):
@@ -559,8 +592,12 @@ def gf_factor(u):
     # print('\n'.join(''.join(map(str, int_to_bitlist(r, n))) for r in Q))
     # print("")
 
+    # for i, v_i in enumerate(v):
+    #     print(f"v_{i} = {''.join(map(str, int_to_bitlist(v_i, n)))}")
+
     factors = [u]
-    for v_i in v:
+    # skip v[0] = 1, which is not useful
+    for v_i in v[1:]:
         for f in factors[:]:
             # early exit if we've found all the factors
             if len(factors) == len(v): break
