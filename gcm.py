@@ -309,6 +309,18 @@ MASK256_4 = 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0
 MASK256_2 = 0x33333333_33333333_33333333_33333333_33333333_33333333_33333333_33333333
 MASK256_1 = 0x55555555_55555555_55555555_55555555_55555555_55555555_55555555_55555555
 
+# square of a max 64 bit value, requiring no reduction
+def gf_square64(x):
+    assert x < (1 << 64)
+    x = (x | (x << 32)) & MASK128_32
+    x = (x | (x << 16)) & MASK128_16
+    x = (x | (x << 8)) & MASK128_8
+    x = (x | (x << 4)) & MASK128_4
+    x = (x | (x << 2)) & MASK128_2
+    x = (x | (x << 1)) & MASK128_1
+
+    return x
+
 # equal to gf_mul(x, x), but potentially faster
 # note that a gf_mul implementation using a carryless multiply CPU intrinsic
 # will definitely beat this. but it should be faster than the naive gf_mul loop.
@@ -542,10 +554,26 @@ def gf_factor(u):
 
             # start with Q[k] without the effects of all previous loops iters
             tmp = orig_Q[k]
-            # replicate the effects of all iterations up to simple_part
-            for i in range(1, simple_part):
-                # xor bit 2*i with bit i
-                tmp ^= (((tmp >> i) & 1) << (2 * i))
+
+            # bitmask containing bits range(1, simple_part)
+            mask = (1 << simple_part) - (1 << 1)
+
+            # xor each bit i in range(1, simple_part) with bit i*2**{1..}
+            # this will take 7 iterations (or fewer, if lsbs are zero)
+            # note that this is squaring which does not require reduction,
+            # due to the mask limiting input bits to the lower half.
+            # assuming n is 128, sq is 128 bits and sq & mask is 64 bits.
+            # (in fact, if there was reduction, it would mess things up.
+            #  we are using squaring just for its nice double-each-bits-
+            #  position behavior in GF2)
+            sq = gf_square64(tmp & mask)
+            for _ in range(7):
+                tmp ^= sq
+                sq = gf_square64(sq & mask)
+                if sq == 0: break
+            assert sq == 0
+
+            # show that we produced the correct Q_k
             assert tmp == Q_k
 
         j = next((j for j in (range(n)) if (Q_k >> j) & 1 != 0 and (c_set >> j) & 1 == 0), None)
