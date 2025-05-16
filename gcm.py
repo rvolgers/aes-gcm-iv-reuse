@@ -545,6 +545,8 @@ def gf_factor(u):
     v = [1]
     for k in range(1, n):
         Q_k = Q[k]
+        # print(f"Q[{k}] = {''.join(map(str, int_to_bitlist(Q_k, n)))}")
+
         if 1 <= k < simple_part:
             # show that the first simple_part rows are perfectly deterministic
             assert Q_k == (1 << k) | (1 << (2 * k))
@@ -595,9 +597,14 @@ def gf_factor(u):
             c_set |= bit_j
             c[k] = j
         else:
-            # column indices are also deterministic for the simple part
-            # NOTE: this does NOT apply to c[0], which is left unset and
-            #       is usually (always?) set right after the simple part.
+            # loop iteration k=0 (well actually we hardcode it, but even so)
+            # had no bits set in Q_k, and so did not find a j, and so did not
+            # set c[0] to anything.
+            assert c[0] is None
+            # during the simple part, we always pick up j=k because each such
+            # row has only two bits set (k and 2*k) and it picks up the first.
+            # we could decide to pick the last, which produces a different
+            # pattern which seems more difficult to hard-code, so we don't.
             assert c[1:simple_part] == list(range(1, simple_part))
 
             # we'll build it in reverse, so this bit is bit k
