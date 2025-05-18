@@ -565,7 +565,8 @@ def gf_factor(u):
             mask = (1 << simple_part) - (1 << 1)
 
             # xor each bit i in range(1, simple_part) with bit i*2**{1..}
-            # this will take 7 iterations (or fewer, if lsbs are zero)
+            # this will take 7 iterations (or fewer, if lsbs are zero or
+            # the polynomial was shorter than 128 bits)
             # note that this is squaring which does not require reduction,
             # due to the mask limiting input bits to the lower half.
             # assuming n is 128, sq is 128 bits and sq & mask is 64 bits.
@@ -573,7 +574,7 @@ def gf_factor(u):
             #  we are using squaring just for its nice double-each-bits-
             #  position behavior in GF2)
             sq = gf_square64(tmp & mask)
-            for _ in range(7):
+            for _ in range(6):
                 tmp ^= sq
                 sq = gf_square64(sq & mask)
                 if sq == 0: break
@@ -645,13 +646,14 @@ def gf_factor(u):
             # however we can skip one of them because:
             # assert u == gf_mul(gf_gcd(v_r ^ 0, u), gf_gcd(v_r ^ 1, u))
             # (see B4 in the cited explanation from TAOCP)
-            tmp = gf_gcd(f, v_i)
-            if tmp != 1 and tmp != f:
+            (d, new_f, new_v_i) = gf_gcd_split(f, v_i)
+            if d != 1 and d != f:
                 factors.remove(f)
                 factors.extend([
-                    tmp,
-                    gf_div(f, tmp)
+                    d,
+                    new_f,
                 ])
+            v_i = new_v_i
 
     # NOTE if you uncomment, probably remove the early-out in the loop above
     # assert len(factors) == len(v)
