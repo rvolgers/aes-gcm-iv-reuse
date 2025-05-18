@@ -74,8 +74,6 @@ def gf_mul_noreduce(x, y):
 ALL64 = (1 << 64) - 1
 ALL128 = (1 << 128) - 1
 
-SYM_PRINTED = False
-
 # instrumented version of gf_reduce to show how input bits affect outputs
 def gf_reduce_instrumented(x):
     # - only bits in the upper 128 can cause a modular reduction
@@ -84,7 +82,10 @@ def gf_reduce_instrumented(x):
     #   it doesn't end up in the output
     # - 
 
-    x_sym = [1 << i for i in range(256)]
+    # x_sym = [1 << i for i in range(256)]
+
+    # version assuming all odd bits of x are zero, i.e. x is a square
+    x_sym = [1 << i if i & 1 == 0 else 0 for i in range(256)]
 
     sym_shl = lambda x, i: [0] * i + x
     sym_shr = lambda x, i: x[i:]
@@ -120,15 +121,15 @@ def gf_reduce_instrumented(x):
 
     tmp = (x ^ H) & ALL128
     tmp_sym = sym_xor(x_sym, H_sym)[:128]
-    global SYM_PRINTED
-    if SYM_PRINTED == False:
-        print(repr(tmp_sym))
-        print("\n".join(sym_str(x) for x in tmp_sym))
-        SYM_PRINTED = True
+
+    print(repr(tmp_sym))
+    print("\n".join(sym_str(x) for x in tmp_sym))
 
     # assert tmp == gf_reduce_64(x)
 
     return tmp
+
+gf_reduce_instrumented(3213213132132132132)
 
 # further streamlined gf_reduce_128 for python
 def gf_reduce(x):
