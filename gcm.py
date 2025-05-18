@@ -381,50 +381,22 @@ def gf_sqrt(x):
 def gf_inverse(x):
     assert x != 0, "zero has no inverse"
 
-    # inverse by extended euclidean algorithm.
-    # https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Computing_multiplicative_inverses_in_modular_structures
-    # https://crypto.stackexchange.com/questions/12956/multiplicative-inverse-in-operatornamegf28/12962#12962
-    # https://crypto.stackexchange.com/a/83544
-    (u1, u2, u3) = (0, 1, GF_POLY)
-    (v1, v2, v3) = (1, 0, x)
+    (d, _, _, inv, _) = gf_extended_euclidean(x, GF_POLY)
 
-    # notice that the GF_POLY term of the invariant is zero modulo GF_POLY.
-    # so we exit once we have v1 such that gf_mul(x, v1) == 1,
-    # which means v1 is the inverse of x modulo GF_POLY.
-    # note that v3 is actually the gcd of GF_POLY and x.
-    # we know it will always be 1, because GF_POLY is irreducible.
-    while v3 != 1:
-        # loop invariant
-        # assert gf_mul_noreduce(x, u1) ^ gf_mul_noreduce(GF_POLY, u2) == u3
-        # assert gf_mul_noreduce(x, v1) ^ gf_mul_noreduce(GF_POLY, v2) == v3
-
-        (t1, t2, t3) = (u1, u2, u3)
-        q = u3.bit_length() - v3.bit_length()
-        if q >= 0:
-            t1 ^= v1 << q
-            t2 ^= v2 << q
-            t3 ^= v3 << q
-        (u1, u2, u3) = (v1, v2, v3)
-        (v1, v2, v3) = (t1, t2, t3)
-
-        # after the first loop iteration we should be within 128 bits again
-        # assert u1 < (1<<128) and u2 < (1<<128) and u3 < (1<<128)
-        # assert v1 < (1<<128) and v2 < (1<<128) and v3 < (1<<128)
-
-        # so now we can express the loop invariant modulo GF_POLY
-        # assert gf_mul(x, u1) == u3
-        # assert gf_mul(x, v1) == v3
+    # this is guaranteed if x < GF_POLY since GF_POLY is irreducible
+    assert d == 1
 
     # could've also used fermat's little theorem and gf_pow().
     # easier to understand but a lot more expensive than the above.
     # assert v1 == gf_pow(x, (1<<128) - 2)
 
-    return v1
+    return inv
 
 # some small irreducble polynomials over GF2
 # https://oeis.org/A014580
 GF_IRREDUCIBLES = [2, 3, 7, 11, 13, 19, 25, 31, 37, 41, 47, 55, 59, 61, 67, 73, 87, 91, 97, 103, 109, 115, 117, 131, 137, 143, 145, 157, 167, 171, 185, 191, 193, 203, 211, 213, 229, 239, 241, 247, 253, 283, 285, 299, 301, 313, 319, 333, 351, 355, 357, 361, 369, 375]
 
+# not specific to GF(2**128), works with unreduced inputs
 def gf_divmod(x, y):
     q = 0
     r = x
@@ -437,21 +409,33 @@ def gf_divmod(x, y):
 
     return (q, r)
 
+# not specific to GF(2**128), works with unreduced inputs
 def gf_mod(x, y):
     return gf_divmod(x, y)[1]
 
+# not specific to GF(2**128), works with unreduced inputs
 def gf_div(x, y):
     q, r = gf_divmod(x, y)
     assert r == 0
     return q
 
-def gf_gcd(x, y):
+# fully-featured extended euclidean algorithm on binary polynomials.
+# this is not specific to GF(2**128) and works with unreduced inputs.
+# returns tuple (gcd(x, y), x // gcd(x, y), y // gcd(x, y), xc, yc)
+# xc and yc are the bezout coefficients such that x * xc + y * yc == gcd(x, y)
+# if the gcd is 1, then xc is the inverse of x mod y, and similar for yc
+def gf_extended_euclidean(x, y):
+    # https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Computing_multiplicative_inverses_in_modular_structures
+    # https://crypto.stackexchange.com/questions/12956/multiplicative-inverse-in-operatornamegf28/12962#12962
+    # https://crypto.stackexchange.com/a/83544
+
     (u1, u2, u3) = (0, 1, y)
     (v1, v2, v3) = (1, 0, x)
 
     while v3 != 0:
-        # assert gf_mul(x, u1) ^ gf_mul(y, u2) == u3
-        # assert gf_mul(x, v1) ^ gf_mul(y, v2) == v3
+        # bezout's identity
+        assert gf_mul_noreduce(x, u1) ^ gf_mul_noreduce(y, u2) == u3
+        assert gf_mul_noreduce(x, v1) ^ gf_mul_noreduce(y, v2) == v3
 
         (t1, t2, t3) = (u1, u2, u3)
         q = u3.bit_length() - v3.bit_length()
@@ -463,8 +447,27 @@ def gf_gcd(x, y):
         (v1, v2, v3) = (t1, t2, t3)
 
     # assert gf_mul(gf_mul(gf_div(x, u3), gf_div(y, u3)), gf_square(u3)) == gf_mul(x, y)
+    # v2 and v1 are x and y divided by the gcd
+    assert v2 == gf_div(x, u3) and v1 == gf_div(y, u3)
+    # u1 and u2 are the bezout coefficients
+    assert gf_mul_noreduce(x, u1) ^ gf_mul_noreduce(y, u2) == u3
+    # if the gcd was 1
+    if u3 == 1:
+        # then u1 and u2 are the inverses of x mod y and y mod x
+        # TODO different way to express this so we don't check for x or y 1
+        assert y == 1 or gf_mod(gf_mul_noreduce(x, u1), y) == 1
+        assert x == 1 or gf_mod(gf_mul_noreduce(y, u2), x) == 1
 
-    return u3
+    return (u3, v2, v1, u1, u2)
+
+gf_extended_euclidean(gf_mul(GF_IRREDUCIBLES[10], GF_IRREDUCIBLES[20]), gf_mul(GF_IRREDUCIBLES[5], GF_IRREDUCIBLES[10]))
+gf_extended_euclidean(gf_mul(GF_IRREDUCIBLES[10], GF_IRREDUCIBLES[20]), gf_mul(GF_IRREDUCIBLES[5], GF_IRREDUCIBLES[15]))
+
+def gf_gcd_split(x, y):
+    return tuple(gf_extended_euclidean(x, y)[:3])
+
+def gf_gcd(x, y):
+    return gf_extended_euclidean(x, y)[0]
 
 def gf_formal_derivative(x):
     return (x >> 1) & MASK128_1
