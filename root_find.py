@@ -341,12 +341,13 @@ def bta(f):
     elif f.is_constant():
         return []
     
-    K = f.base_ring()
-    Fp = K.prime_subfield()
-    X = f.parent().gen()
+    K = f.base_ring() # GF2_128
+    Fp = K.prime_subfield() # GF2
+    X = f.parent().gen() # x
     z = K.gen()
-    p = K.characteristic()
-    n = K.degree()
+    p = K.characteristic() # 2
+    n = K.degree() # 128
+    print(f"K = {K}, Fp = {Fp}, X = {X}, p = {p}, n = {n}")
 
     # Compute Tr(ax) mod f
     a = K.random_element()

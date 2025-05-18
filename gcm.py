@@ -238,7 +238,16 @@ def gf_mul_intrinsic(x, y):
 
     return gf_reduce(tmp)
 
+gf_mul_count = 0
+
 def gf_mul(x, y):
+    global gf_mul_count
+
+    if x == 0 or y == 0:
+        return 0
+
+    gf_mul_count += 1
+
     # tmp = gf_mul_intrinsic(x,y)
 
     # galois field multiplication aka carryless multiplication.
@@ -758,6 +767,16 @@ def gf_assert_elem_order(elem, order_factors):
         assert gf_pow(elem, expected // p) != 1
         prev = p
 
+# FIXME is this even correct
+def gf_find_element_order(elem):
+    factors = GROUP_ORDER_FACTORS
+
+    for f in GROUP_ORDER_FACTORS:
+        if gf_pow(elem, GROUP_ORDER // f) == 1:
+            factors.remove(f)
+
+    return factors
+
 # generator
 GF_GEN = 2
 gf_assert_elem_order(GF_GEN, GROUP_ORDER_FACTORS)
@@ -773,6 +792,7 @@ FERMAT_PRIMES = [3, 5, 17, 257, 65537]
 FERMAT_NUMBERS = [(1 << (1 << b)) | 1 for b in range(7)]
 assert all(p in GROUP_ORDER_FACTORS for p in FERMAT_PRIMES)
 assert all(p in FERMAT_NUMBERS for p in FERMAT_PRIMES)
+assert all(x in FERMAT_NUMBERS for x in [641 * 6700417, 274177 * 67280421310721])
 
 # show multiplicative group structure
 for i in range(1, 32):
@@ -781,24 +801,69 @@ for i in range(1, 32):
     tot = euler_totient(factors)
     print(f"cyclic multiplicative subgroup of order {prod}:")
     print(f"    factors of group order: {factors!s}")
-    print(f"    subgroup has {tot} generators")
+    gg = gf_pow(GF_GEN, GROUP_ORDER // prod)
+    gf_assert_elem_order(gg, factors)
+    print(f"    subgroup has {tot} generators:")
+    print(f"    [gf_pow({hex(gg)}, x) ")
+    print(f"        for x in range ({prod})")
+    print(f"        if not any(x % p == 0 for p in {factors!r}))]")
+    print(f"    each of which has order {prod}")
     print(f"    which means there are {tot} primitive {num_ordinal(prod)} roots of unity")
-    example = gf_pow(GF_GEN, sum(1 * prod // f for f in factors) * GROUP_ORDER // prod)
-    gf_assert_elem_order(example, factors)
-    print(f"    example: {example}")
 
-# demonstrate how to find all nth roots of unity (in this case, all 8 15-th roots of unity)
-# TODO more optimizations
-base_1 = gf_pow(GF_GEN, GROUP_ORDER // (3 * 5))
-for i in range(1, 3):
-    base_2 = gf_pow(base_1, 5 * i)
-    for j in range(1, 5):
-        base_3 = gf_pow(base_1, 3 * j)
-        tmp = gf_mul(base_2, base_3)
-        assert tmp == gf_pow(GF_GEN, (5 * i + 3 * j) * GROUP_ORDER // (3 * 5))
-        # print(f"{i} {j} {gf_pow(tmp, 3)} {gf_pow(tmp, 5)} {gf_pow(tmp, 3 * 5)}")
-        # print(f"{tmp} {gf_inverse(tmp)}")
-        gf_assert_elem_order(tmp, [3, 5])
+# TODO play with pohlig-hellman discrete logarithm
+#      it makes use of multiplicative structure, so good for practice
+
+# show how freshman's dream interacts with exponentiation-by-squaring:
+# (x+a)**12
+# (x+a)**8 * (x+a)**4
+# (x**8 + a**8)(x**4 + a**4)
+# (x**8 * x**4) + (x**8 * a**4) + (x**4 * a**8) + (a**8 * a**4)
+x = gf_random()
+a = gf_random()
+assert gf_pow(x ^ a, 12) == (
+    gf_pow(x, 12)
+    ^ gf_mul(gf_pow(x, 8), gf_pow(a, 4))
+    ^ gf_mul(gf_pow(x, 4), gf_pow(a, 8))
+    ^ gf_pow(a, 12)
+)
+
+# separate variable per power of two:
+# (x+a)**8 * (x+b)**4
+# (x**8 + a**8)(x**4 + b**4)
+# (x**8 * x**4) + (x**8 * b**4) + (x**4 * a**8) + (a**8 * b**4)
+
+# for all powers 1,2,4,8 it gets a bit long:
+# (x+a)**8 * (x+b)**4 * (x+c)**2 + (x+d)
+# (x**8 + a**8)(x**4 + b**4)(x**2 + c**2)(x + d)
+#
+#   (x**8 * x**4 * x**2 * x)
+# + (x**8 * x**4 * x**2 * d)
+# + (x**8 * x**4 * c**2 * x)
+# + (x**8 * x**4 * c**2 * d)
+# + (x**8 * b**4 * x**2 * x)
+# + (x**8 * b**4 * x**2 * d)
+# + (x**8 * b**4 * c**2 * x)
+# + (x**8 * b**4 * c**2 * d)
+# + (a**8 * x**4 * x**2 * x)
+# + (a**8 * x**4 * x**2 * d)
+# + (a**8 * x**4 * c**2 * x)
+# + (a**8 * x**4 * c**2 * d)
+# + (a**8 * b**4 * x**2 * x)
+# + (a**8 * b**4 * x**2 * d)
+# + (a**8 * b**4 * c**2 * x)
+# + (a**8 * b**4 * c**2 * d)
+
+# maybe we can get further by putting even more additive terms in each
+# power of two, and then seeing if the sum-of-products form has useful
+# structure we can use to rull up a long polynomial into a shorter
+# representation? of course we'd then have to still find some way to
+# recover roots from that representation...
+
+# TODO write some code to try some of these options
+
+# freshman's dream vs square root
+assert gf_square(x) ^ gf_square(a) == gf_square(x ^ a)
+assert gf_square(x) ^ a == gf_square(x ^ gf_sqrt(a))
 
 # recalculating the exponent every time is a really bad way to do this,
 # but it makes for a nice api. fine as long as it's not used much.
@@ -831,10 +896,13 @@ assert acc == gf_inverse(n)
 # - if the order divides 0xffff, gf_pow(n, 0x10000) == n
 # - if the order was 0x10001, gf_pow(n, 0x10000) == gf_inverse(n)
 
-n = 151057730537251302588469035879534785155
+n = 132978334345187347553836768243853666661
+print(f"determining order of {n}")
+order_factors = gf_find_element_order(n)
+print(f"gf_find_element_order: {hex(product(order_factors))} {order_factors}")
 n_inv = gf_inverse(n)
 x = n
-for i in range(128):
+for i in range(129):
     if i > 0:
         order = None
         if x == n:
@@ -846,7 +914,8 @@ for i in range(128):
             factors = [p for p in GROUP_ORDER_FACTORS if order % p == 0]
             remainder = order // product(factors)
             print(f"order of n divides {hex(order)} {factors!r} {hex(remainder) if remainder != 1 else ''}")
-            assert 0x10001 in factors
+        else:
+            print(f"order of n does not divide {hex((1 << i) - 1)} or {hex((1 << i) + 1)}")
 
     x = gf_square(x)
 
@@ -1198,8 +1267,57 @@ def poly_modexp_fancy(f, e, g):
 
     return prod
 
+test_poly = list(range(3,12))
+print(repr(poly_mul(test_poly, test_poly)))
+print(repr(poly_mul(test_poly, test_poly[:-1])))
+print(repr(poly_mul(test_poly, test_poly[:-2])))
+print(repr(poly_mul(test_poly, test_poly[1:])))
+print(repr(poly_mul(test_poly, test_poly[2:])))
+print(repr(poly_sub(poly_mul(test_poly, test_poly), poly_mul(test_poly, test_poly[1:]))))
+print(repr(poly_sub(poly_mul(test_poly, test_poly)[1:], poly_mul(test_poly, test_poly[2:]))))
+
+import re
+def human_sort_key(s):
+    return [int(t) if i & 1 else t for i, t in enumerate(re.split('([0-9]+)', s))]
+
+def sym_poly_mul(f, g):
+    result = [[] for _ in range(len(f) + len(g))]
+    for i, ci in enumerate(f):
+        for j, cj in enumerate(g):
+            prod = tuple(sorted([ci, cj], key=human_sort_key))
+            if prod in result[i + j]:
+                result[i + j].remove(prod)
+            else:
+                result[i + j].append(prod)
+                result[i + j].sort(key=lambda t: human_sort_key(repr(t)))
+    while len(result[-1]) == 0:
+        result.pop()
+    return result
+
+def sym_poly_str(f):
+    tmp = f'total {sum(len(t) for t in f)} terms:\n\t'
+    return tmp + '\n\t'.join(f'{i}: ' + ' + '.join(f'{a}*{b}' for a,b in t) for i,t in enumerate(f))
+
+f = [f'f{i}' for i in range(9)]
+g = [f'g{i}' for i in range(9)]
+
+print("full:")
+print(sym_poly_str(sym_poly_mul(f, g)))
+
+polys = []
+for i in range(0, 10, 2):
+    print(f"minus {i}:")
+    polys.append(sym_poly_mul(g, g[i:]))
+    print(sym_poly_str(polys[-1]))
+
+terms = Counter(t for p in polys for x in p for t in x)
+
+print(f"{len(terms)} unique terms")
+
+
 def mont_reduce(f, g, G, is_square=False):
     m = poly_mul_low(f, G, len(g), f_is_square = is_square)
+    # assert poly_mul_low(m, g, len(g)) == poly_trim(f[:len(g)])
     t = poly_add(f[len(g):], poly_mul_high(m, g, len(g)))
     t = poly_trim(t)
     assert len(t) <= len(g)
@@ -1216,6 +1334,9 @@ def poly_modexp(f, e, g):
     orig_e = e
     orig_f = f[:]
     orig_g = g[:]
+
+    global gf_mul_count
+    start_mul_count = gf_mul_count
 
     # if g is divisible by x (in other words, starts with one or more zeroes)
     # then divide that out for now, we will put it back later via CRT.
@@ -1315,7 +1436,15 @@ def poly_modexp(f, e, g):
         print(f"len result = {len(result)} len orig_g = {len(orig_g)}")
         result = poly_mod(result, orig_g)
 
+    mont_mul_count = gf_mul_count - start_mul_count
+
+    start_mul_count = gf_mul_count
+
     tmp = poly_modexp_simple(orig_f, orig_e, orig_g)
+
+    simple_mul_count = gf_mul_count - start_mul_count
+
+    print(f"length {len(orig_g)} simple {simple_mul_count} mont {mont_mul_count}")
 
     # print('result: ' + repr(tmp))
     # print('correct: ' + repr(result))
@@ -1372,6 +1501,18 @@ def poly_roots_bta(f):
 
     return roots
 
+# x**256 divided by GF_POLY is again equal to GF_POLY, though with a remainder.
+# the remainder is, as expected, the square of the low part of GF_POLY.
+# this is referenced in the paper explaining the gf_reduce optimization.
+tmp = [(GF_POLY >> i) & 1 for i in range(GF_POLY.bit_length())]
+tmp2 = poly_square(tmp)
+q, r = poly_divmod([0] * 256 + [1], tmp)
+assert q == tmp and r == [1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+
+x = 336659828399716795593154996656950128312
+x_poly = [(x >> i) & 1 for i in range(x.bit_length())]
+# print("foo: " + repr(poly_divmod(tmp2, x_poly)))
+# print("bar: " + repr(bin(gf_inverse(x))))
 
 ##########################
 # AES GCM implementation #
@@ -1436,6 +1577,10 @@ class AES_GCM:
 
         # the secret used in the ghash function.
         self._auth_key = self._aes_ecb_encrypt(b'\x00' * 16)
+
+        # TODO section 4 mentions a difference here between the NIST spec
+        #      and the original GCM spec. look into this.
+        #      https://csrc.nist.gov/csrc/media/projects/block-cipher-techniques/documents/bcm/comments/800-38-series-drafts/gcm/joux_comments.pdf
 
         # if the length of the passed iv is not 12 it is passed through the
         # ghash function and the resulting 128 bit value is *directly* used
@@ -1596,39 +1741,60 @@ def recover_auth_secret(ciphertexts):
 
     # TODO handle the case where poly is not square-free
     # this does not appear to ever trigger in practice.
+    # according to my understanding, we are in a perfect field, and thus this condition is sufficient.
+    # https://en.wikipedia.org/wiki/Multiplicity_(mathematics)#Multiplicity_of_a_root_of_a_polynomial
+    # "If a {\displaystyle a} is a root of multiplicity k {\displaystyle k} of a polynomial, then it is a root of multiplicity k − 1 {\displaystyle k-1} of the derivative of that polynomial, unless the characteristic of the underlying field is a divisor of k, in which case a {\displaystyle a} is a root of multiplicity at least k {\displaystyle k} of the derivative. "
     c = poly_gcd(f, poly_formal_derivative(f))
     assert c == POLY_ONE, "polynomial is not square-free"
 
-    from sage.all import GF, Integer, PolynomialRing
-    modulus = [Integer((GF_POLY >> i) & 1) for i in range(GF_POLY.bit_length())]
-    GF128 = GF(Integer(2)**Integer(128), modulus=modulus, names='b')
-    P = PolynomialRing(GF128, 'x')
-    Pf = P([GF128.from_integer(x) for x in f])
-    t = time()
-    tmp = Pf.roots()
-    tmp = [x.to_integer() for x, _ in tmp]
-    print("roots: " + repr(tmp) + f" {time() - t}")
-    from root_find import bta, arm, sra
-    t = time()
-    tmp = bta(Pf)
-    tmp = [x.to_integer() for x in tmp]
-    print("bta: " + repr(tmp) + f" {time() - t}")
-    t = time()
-    tmp = arm(Pf)
-    tmp = [x.to_integer() for x in tmp]
-    print("arm: " + repr(tmp) + f" {time() - t}")
-    t = time()
-    tmp = sra(Pf)
-    tmp = [x.to_integer() for x in tmp]
-    print("sra: " + repr(tmp) + f" {time() - t}")
+    # from sage.all import GF, Integer, PolynomialRing
+    # modulus = [Integer((GF_POLY >> i) & 1) for i in range(GF_POLY.bit_length())]
+    # GF128 = GF(Integer(2)**Integer(128), modulus=modulus, names='b')
+    # P = PolynomialRing(GF128, 'x')
+    # Pf = P([GF128.from_integer(x) for x in f])
+    # t = time()
+    # tmp = Pf.roots()
+    # tmp = [x.to_integer() for x, _ in tmp]
+    # print("roots: " + repr(tmp) + f" {time() - t}")
+    # from root_find import bta, arm, sra
+    # t = time()
+    # tmp = bta(Pf)
+    # tmp = [x.to_integer() for x in tmp]
+    # print("bta: " + repr(tmp) + f" {time() - t}")
+    # t = time()
+    # tmp = arm(Pf)
+    # tmp = [x.to_integer() for x in tmp]
+    # print("arm: " + repr(tmp) + f" {time() - t}")
+    # t = time()
+    # tmp = sra(Pf)
+    # tmp = [x.to_integer() for x in tmp]
+    # print("sra: " + repr(tmp) + f" {time() - t}")
 
-    t = time();
-    tmp = poly_roots_bta(f)
-    print("my bta: " + repr(tmp) + f" {time() - t}")
+    # t = time();
+    # tmp = poly_roots_bta(f)
+    # print("my bta: " + repr(tmp) + f" {time() - t}")
 
     # A Computational Introduction to Number Theory and Algebra (v2.5)
     # by Victor Shoup
     # https://www.shoup.net/ntb/ntb-v2_5.pdf
+
+
+    elem = [gf_random() for _ in range(len(f))]
+    elem_sq = poly_mod(poly_square(elem), f)
+
+    even = poly_trim([gf_sqrt(c) for i,c in enumerate(elem_sq) if i & 1 == 0])
+    odd = poly_trim([gf_sqrt(c) for i,c in enumerate(elem_sq) if i & 1 == 1])
+
+    print("elem " + repr(elem))
+    print("elem sq" + repr(elem_sq))
+    print("even " + repr(even))
+    print("odd " + repr(odd))
+
+    sqrt_poly_x = poly_mod(poly_mul(poly_sub(elem, even), poly_inverse(odd, f)), f)
+    assert poly_mod(poly_square(sqrt_poly_x), f) == POLY_X
+
+    print("sqrt x " + repr(sqrt_poly_x))
+
 
     t = time()
     print("performing distinct degree factorization")
@@ -1736,8 +1902,8 @@ if __name__ == '__main__':
     from random import randbytes
 
     recovered = recover_auth_secret([
-        gcm.encrypt(iv, randbytes(100+16), b""),
-        gcm.encrypt(iv, randbytes(100+16), b""),
+        gcm.encrypt(iv, randbytes(316), b""),
+        gcm.encrypt(iv, randbytes(316), b""),
         # gcm.encrypt(iv, randbytes(100), b""),
     ])
 

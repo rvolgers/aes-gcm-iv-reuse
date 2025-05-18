@@ -608,9 +608,9 @@ fn recover_auth_secret(mut ciphertexts: Vec<Vec<u8>>) -> Vec<([u8; 16], [u8; 16]
         f = poly_gcd(f, g);
     }
 
-    println!("invoking NTL");
-    let roots = find_roots_ntl_wrapper(&f);
-    println!("NTL roots = {:?}", roots);
+    // println!("invoking NTL");
+    // let roots = find_roots_ntl_wrapper(&f);
+    // println!("NTL roots = {:?}", roots);
 
     assert!(f.len() >= 2);
 
