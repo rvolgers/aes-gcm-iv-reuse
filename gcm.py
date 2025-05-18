@@ -353,26 +353,26 @@ assert gf_square(GF_SQRT_2) == 2
 # at https://eprint.iacr.org/2007/103.pdf
 def gf_sqrt(x):
     # gather even bits into a 64 bit value
-    lo = x & MASK128_1
-    lo = (lo | (lo >> 1)) & MASK128_2
-    lo = (lo | (lo >> 2)) & MASK128_4
-    lo = (lo | (lo >> 4)) & MASK128_8
-    lo = (lo | (lo >> 8)) & MASK128_16
-    lo = (lo | (lo >> 16)) & MASK128_32
-    lo = (lo | (lo >> 32)) & MASK128_64
+    even = x & MASK128_1
+    even = (even | (even >> 1)) & MASK128_2
+    even = (even | (even >> 2)) & MASK128_4
+    even = (even | (even >> 4)) & MASK128_8
+    even = (even | (even >> 8)) & MASK128_16
+    even = (even | (even >> 16)) & MASK128_32
+    even = (even | (even >> 32)) & MASK128_64
 
     # gather odd bits into a 64 bit value
-    hi = (x >> 1) & MASK128_1
-    hi = (hi | (hi >> 1)) & MASK128_2
-    hi = (hi | (hi >> 2)) & MASK128_4
-    hi = (hi | (hi >> 4)) & MASK128_8
-    hi = (hi | (hi >> 8)) & MASK128_16
-    hi = (hi | (hi >> 16)) & MASK128_32
-    hi = (hi | (hi >> 32)) & MASK128_64
+    odd = (x >> 1) & MASK128_1
+    odd = (odd | (odd >> 1)) & MASK128_2
+    odd = (odd | (odd >> 2)) & MASK128_4
+    odd = (odd | (odd >> 4)) & MASK128_8
+    odd = (odd | (odd >> 8)) & MASK128_16
+    odd = (odd | (odd >> 16)) & MASK128_32
+    odd = (odd | (odd >> 32)) & MASK128_64
 
     # note that when using CPU intrinsics, the fact that hi is only 64 bits
     # could be used to avoid some of the work.
-    result = gf_mul(hi, GF_SQRT_2) ^ lo
+    result = gf_mul(odd, GF_SQRT_2) ^ even
 
     # assert result == gf_pow(x, 1 << 127)
 
