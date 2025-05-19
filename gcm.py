@@ -847,8 +847,69 @@ for i in range(1, 32):
     print(f"    each of which has order {prod}")
     print(f"    which means there are {tot} primitive {num_ordinal(prod)} roots of unity")
 
-# TODO play with pohlig-hellman discrete logarithm
-#      it makes use of multiplicative structure, so good for practice
+# do a basic pohlig-hellman discrete logarithm computation as far as we can
+# with just the fermat primes, just to see if we can do anything useful with
+# that structure.
+h = gf_random()
+
+xpp = None
+pp = None
+hpp = None
+gpp = None
+
+for p in FERMAT_PRIMES:
+    # the product of all preceding fermat primes is p - 2
+    # e.g. for p == 0x10001, pp == 0xffff
+    assert pp is None or pp == p - 2
+
+    print(f"prime = {p}")
+    print(hex(GROUP_ORDER // (p - 2)))
+    assert GROUP_ORDER % (p - 2) == 0
+    print(hex(GROUP_ORDER // (p - 1)) + " with remainder " + hex(GROUP_ORDER % (p - 1)))
+    print(hex(GROUP_ORDER // p))
+
+    gp = gf_pow(GF_GEN, GROUP_ORDER // p)
+    hp = gf_pow(h, GROUP_ORDER // p)
+
+    # find xp such that gf_pow(gp, xp) == hp by dumb brute force
+    xp = None
+    tmp = 1
+    for i in range(0, p):
+        if tmp == hp:
+            xp = i
+            break
+        tmp = gf_mul(tmp, gp)
+    print(f"new: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {p}), {xp}) == {hp}")
+
+    assert xp is not None
+    assert gf_pow(gp, xp) == hp
+
+    if pp is None:
+        pp = p
+        xpp = xp
+        hpp = hp
+        gpp = gp
+    else:
+        print(f"prev: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {pp}), {xpp}) == {hpp}")
+        (d, _, _, a, b) = extended_euclidean(pp, p)
+        assert d == 1
+        # a is the inverse of pp mod p
+        a %= p
+        assert (pp * a) % p == 1
+        # b is the inverse of p mod pp
+        b %= pp
+        assert (p * b) % pp == 1
+        tmp = (xpp * b * p + xp * a * pp) % (pp * p)
+        assert tmp % pp  == xpp
+        assert tmp % p == xp
+        xpp = tmp
+        pp = pp * p
+        hpp = gf_pow(h, GROUP_ORDER // pp)
+        gpp = gf_pow(GF_GEN, GROUP_ORDER // pp)
+
+    assert gf_pow(gpp, xpp) == hpp
+
+print(f"gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {pp}), {xpp}) == {hpp}")
 
 # show how freshman's dream interacts with exponentiation-by-squaring:
 # (x+a)**12
