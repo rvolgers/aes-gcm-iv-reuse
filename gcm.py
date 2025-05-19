@@ -281,6 +281,8 @@ def gf_mul(x, y):
     return result
 
 def gf_pow(x, e):
+    assert e >= 0
+
     # simple exponentation-by-squaring using gf_mul
     prod = 1
     while True:
@@ -428,6 +430,40 @@ def gf_div(x, y):
     assert r == 0
     return q
 
+# extended euclidean algorithm for integers
+# based on https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Pseudocode
+# TODO use binary gcd instead, and find a way to use only positive integers
+def extended_euclidean(a, b):
+    assert a != 0 and b != 0
+
+    (old_r, r) = (a, b)
+    (old_s, s) = (1, 0)
+    (old_t, t) = (0, 1)
+
+    while r != 0:
+        quotient, remainder = divmod(old_r, r)
+        # assert remainder == old_r - quotient * r
+        (old_r, r) = (r, remainder)
+        (old_s, s) = (s, old_s - quotient * s)
+        (old_t, t) = (t, old_t - quotient * t)
+
+    # bezout coefficients
+    # print(f"{a} * {old_s} + {b} * {old_t} = {a * old_s + b * old_t}, expected {old_r}")
+    assert a * old_s + b * old_t == old_r
+
+    # a and b divides by the gcd
+    # print(f"{a} // {old_r} = {a // old_r}, expected {abs(t)}")
+    # print(f"{b} // {old_r} = {b // old_r}, expected {abs(s)}")
+    assert abs(t) == a // old_r and abs(s) == b // old_r
+
+    assert old_r > 0
+
+    return (old_r, abs(t), abs(s), old_s, old_t)
+
+for a in range(1,15):
+    for b in range(1,15):
+        extended_euclidean(a, b)
+
 # fully-featured extended euclidean algorithm on binary polynomials.
 # this is not specific to GF(2**128) and works with unreduced inputs.
 # returns tuple (gcd(x, y), x // gcd(x, y), y // gcd(x, y), xc, yc)
@@ -435,6 +471,7 @@ def gf_div(x, y):
 # if the gcd is 1, then xc is the inverse of x mod y, and similar for yc
 def gf_extended_euclidean(x, y):
     # https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Computing_multiplicative_inverses_in_modular_structures
+    # https://en.wikipedia.org/wiki/Polynomial_greatest_common_divisor#B%C3%A9zout's_identity_and_extended_GCD_algorithm
     # https://crypto.stackexchange.com/questions/12956/multiplicative-inverse-in-operatornamegf28/12962#12962
     # https://crypto.stackexchange.com/a/83544
 
