@@ -7,7 +7,7 @@
 # only used for a basic AES-ECB primitive
 from collections import Counter
 from copy import deepcopy
-from math import gcd
+from math import gcd, isqrt
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import itertools
@@ -1108,18 +1108,10 @@ assert gf_square(bar) ^ bar == gf_square(bar ^ gf_sqrt(bar))
 
 p = (1 << 64) | 1;  # not actually prime so just ignore the name
 gp = gf_pow(GF_GEN, GROUP_ORDER // p)
-m = (p - 1) // 2
-foo = gf_pow(gp, m)
-assert foo == gf_sqrt(gf_inverse(gp))
-assert foo == gf_inverse(gf_sqrt(gp))
-
-# g**x == (g**m)**q * g**r
-# g**x == g**(-1)**(1/2)**q * g**r
-# g**x == g**(r - q/2)
-# g**x == g**r / g**(q/2)
-# g**(2x) == g**(2r) / g**q
-# g**(2x) == gf_square(g**r) * gf_invert(g**q)
-
+m = (1 << 32)
+assert gf_pow(gf_pow(gp, m), m) == gf_inverse(gp)
+assert gf_pow(gp, (p - 1) // 2) == gf_inverse(gf_sqrt(gp))
+assert gf_pow(gp, (p - 1) // 2 + 1) == gf_sqrt(gp)
 
 # do a basic pohlig-hellman discrete logarithm computation as far as we can
 # with just the fermat primes, just to see if we can do anything useful with
@@ -1159,19 +1151,13 @@ for p in FERMAT_PRIMES:
 
     # pretend we found this x in the form of x = (q * m + r) using bsgs
     # both q and r are sort-of in the range 0..m (ignoring the obvious edge case)
-    m = (p - 1) // 2
-    assert (p - 1) == 2 ** 2 ** (((p - 1).bit_length() - 1).bit_length() - 1) # m is of the form 2**2**i // 2
-    q, r = divmod(x, m)
+    if p != 3:
+        assert any(p == 2**2**i + 1 for i in range(8)) # p is of the form 2**2**i + 1
+        m = isqrt(p - 1)
+        assert any(m == 2**2**i for i in range(8)) # m is of the form 2**2**i
+        q, r = divmod(xp, m)
 
-    # gf_square(g**x) == gf_square(g**r) * gf_inverse(g**q)
-    # note that we can precalculate bit-by-bit tables for both
-    # gf_square and gf_inverse (inverse in this subgroup is equal
-    # to exponentiation by m * 2, which is of the required form 2**2**i)
-    # unfortunately, the multiply ruins the additive structure.
-    a = gf_square(gf_pow(gp, r))
-    b = gf_reduce(gf_inverse(gf_pow(gp, q)))
-    assert b == gf_pow(gf_pow(gp, q), m * 2)
-    assert gf_square(gf_pow(gp, x)) == gf_mul(a, b)
+        assert hp == gf_pow(gp, (q * m + r))
 
     print(f"new: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {p}), {xp}) == gf_pow(h, GROUP_ORDER // {p})")
 
@@ -1190,35 +1176,6 @@ for p in FERMAT_PRIMES:
             break
 
     assert gf_inverse(elems[0]) == elems[len(elems) // 2]
-
-    # I have absolutely no idea what I'm doing BUT this is nice:
-    # 1 step per iteration: full group
-    # 2 steps per iteration: half group
-    # 3 steps per iteration: full group again
-    # 4 steps per iteration: quarter group
-
-    # (x * 2) + 1
-    # ((x * 2) + 1) * 2 + 1
-    #   = ((x * 2*2) + 1*2) + 1
-    #   = x * 2*2 + 1*2 + 1
-    # (x * 2*2 + 1*2 + 1) * 2 + 1
-    #   = x * 2*2*2 + 1*2*2 + 1*2 + 1
-    # (x * 2*2*2 + 1*2*2 + 1*2 + 1) * 2 + 1
-    #   = x * 2*2*2*2 + 1*2*2*2 + 1*2*2 + 1*2 + 1
-    # (x * 2*2*2*2 + 1*2*2*2 + 1*2*2 + 1*2 + 1) * 2 + 1
-    #   = x * 2*2*2*2*2 + 1*2*2*2*2 + 1*2*2*2 + 1*2*2 + 1*2 + 1
-
-    initial = hp
-    tmp = initial
-    elems = []
-    for i in range(100000):
-        elems.append(tmp)
-        tmp = gf_mul(gf_square(tmp), tmp)
-        if tmp == initial:
-            elems.sort()
-            print(f"weird group has order {len(elems)}, elems: {repr(elems[:128]) + ('...' if len(elems) > 128 else '')}")
-            break
-    
 
     if pp is None:
         pp = p
