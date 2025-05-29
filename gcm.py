@@ -7,6 +7,7 @@
 # only used for a basic AES-ECB primitive
 from collections import Counter
 from copy import deepcopy
+from math import gcd
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import itertools
@@ -15,6 +16,17 @@ from time import time
 from functools import reduce
 import operator
 
+# count trailing zeroes
+def count_trailing_zeros(x):
+    # implementations differ in how/if ctz(0) is defined, so avoid it
+    assert x != 0
+
+    # (x ^ (x - 1)) isolates the lowest 1 bit
+    # 0b110000 - 1 = 0b101111
+    # 0b110000 ^ (0b110000 - 1) = 0b10000
+
+    return (x ^ (x - 1)).bit_length() - 1
+
 ##############################################
 # code for operating on numbers in GF(2^128) #
 ##############################################
@@ -22,6 +34,10 @@ import operator
 
 # GF(2^128) with polynomial x^128 + x^7 + x^2 + x + 1
 GF_POLY = (1 << 128) | (1 << 7) | (1 << 2) | (1 << 1) | 1
+
+# generator
+GF_X = 2  # f(x) = x + 0
+GF_GEN = GF_X
 
 # used by _gf_sqrt
 MASK128_64 = 0x00000000_00000000_ffffffff_ffffffff
@@ -333,12 +349,7 @@ def gf_square64(x):
 
     return x
 
-# equal to gf_mul(x, x), but potentially faster
-# note that a gf_mul implementation using a carryless multiply CPU intrinsic
-# will definitely beat this. but it should be faster than the naive gf_mul loop.
-def gf_square(x):
-    orig_x = x
-
+def gf_square_noreduce(x):
     x = (x | (x << 64)) & MASK256_64
     x = (x | (x << 32)) & MASK256_32
     x = (x | (x << 16)) & MASK256_16
@@ -346,8 +357,15 @@ def gf_square(x):
     x = (x | (x << 4)) & MASK256_4
     x = (x | (x << 2)) & MASK256_2
     x = (x | (x << 1)) & MASK256_1
+    return x
 
-    x = gf_reduce(x)
+# equal to gf_mul(x, x), but potentially faster
+# note that a gf_mul implementation using a carryless multiply CPU intrinsic
+# will definitely beat this. but it should be faster than the naive gf_mul loop.
+def gf_square(x):
+    orig_x = x
+
+    x = gf_reduce(gf_square_noreduce(x))
 
     # assert x == gf_mul(orig_x, orig_x)
 
@@ -389,8 +407,24 @@ def gf_sqrt(x):
 
     return result
 
+def gf_sqrt_noreduce(x):
+    # assert all odd bytes are zero
+    assert x < (1 << 128) and x & (MASK128_1 << 1) == 0
+
+    # gather even bits into a 64 bit value
+    even = x
+    even = (even | (even >> 1)) & MASK128_2
+    even = (even | (even >> 2)) & MASK128_4
+    even = (even | (even >> 4)) & MASK128_8
+    even = (even | (even >> 8)) & MASK128_16
+    even = (even | (even >> 16)) & MASK128_32
+    even = (even | (even >> 32)) & MASK128_64
+
+    return even
+
 def gf_inverse(x):
     assert x != 0, "zero has no inverse"
+    assert x < (1 << 128)
 
     (d, _, _, inv, _) = gf_extended_euclidean(x, GF_POLY)
 
@@ -401,7 +435,60 @@ def gf_inverse(x):
     # easier to understand but a lot more expensive than the above.
     # assert v1 == gf_pow(x, (1<<128) - 2)
 
-    return inv
+    # I think we need to reduce only once max here?
+    # it was not necessary under the previous specialized implementation
+    # (before we switched to full generic ext eucl.)
+    # that version is still in the rust code
+    return gf_reduce(inv)
+
+# name conflates two with GF_X but oh well
+def gf_inverse_mod_power_of_two(x, e):
+
+    assert x.bit_length() <= e, "x must be smaller than 2**e"
+    assert x & 1 == 1, "x must be odd"
+
+    # reduction mod 2**i does not change any of the bits in the remainder,
+    # which makes this a simple and satisfying algorithm.
+
+    # loop invariants:
+    x_inv = 1 # inverse of x mod (1 << i)
+    x_inv_x = x # gf_mul_noreduce(x_inv, x)
+
+    for i in range(1, e):
+        # check the loop invariants
+        # assert gf_mul_noreduce(x, x_inv) & ((1 << i) - 1) == 1
+        # assert x_inv_x == gf_mul_noreduce(x, x_inv)
+
+        if (x_inv_x >> i) & 1:
+            # currently digit i of x_inv_x is 1, but we want all digits
+            # except digit 0 to be 0. so we flip it by putting a 1 in
+            # digit i of of x_inv. see below for more details on how
+            # that works; remembering that digit 0 of x is known to be 1.
+            x_inv |= 1 << i
+            # by adding a digit to x_inv, we are adding another term
+            # to the calculation of each digit >=i of x_inv_x.
+            # these terms are the digits of x multiplied by the new
+            # digit of x_inv (which we just determined to be 1).
+            x_inv_x ^= x << i
+
+    # assert gf_mul_noreduce(x, x_inv) & ((1 << e) - 1) == 1
+
+    return x_inv
+
+gf_inverse_mod_power_of_two(1337, (1337).bit_length())
+gf_inverse_mod_power_of_two(1337, 20)
+
+def gf_modexp(x, e, m):
+
+    result = 1
+    sq = x
+    for i in range(e.bit_length()):
+        if (e >> i) & 1:
+            result = gf_mod(gf_mul_noreduce(result, sq), m)
+
+        sq = gf_mod(gf_square_noreduce(sq), m)
+    
+    return result
 
 # some small irreducble polynomials over GF2
 # https://oeis.org/A014580
@@ -538,8 +625,68 @@ def int_to_bitlist(x, n = None):
 def bitlist_to_int(x):
     return sum((b & 1) << i for i, b in enumerate(x))
 
+# FIXME untested, unoptimized
+def gf_barret_reduction(x, u, u2):
+    bits = u.bit_length() - 1
+
+    # u2 should be the inverse of u mod (2**(bits * 2))
+    assert gf_mul_noreduce(u, u2) & ((1 << (2*bits)) - 1) == 1
+
+    # the first multiply discards the bottom half of its result,
+    # the second one the top half.
+    q = gf_mul_noreduce((x >> bits), u2) >> bits
+    t = x ^ (gf_mul_noreduce(q, u) & ((1 << bits) - 1))
+
+    return t
+
+def gf_deg(u):
+    return u.bit_length() - 1
+
+def gf_factor_canzass(u):
+
+    factors = []
+
+    # cheaply remove powers of x
+    power_of_x = count_trailing_zeros(u)
+    u >>= power_of_x
+    factors.extend([GF_X] * power_of_x)
+
+    # remove repeated factors, making u square free
+    (square, u, _) = gf_gcd_split(u, gf_formal_derivative(u))
+    if square != 1:
+        factors.extend(gf_factor_canzass(gf_sqrt_noreduce(square)) * 2)
+
+    # distinct degree factorization
+    todo = {}
+    h = GF_X
+    deg = 1
+    while deg * 2 <= gf_deg(u):
+        if deg > 1:
+            h = gf_mod(h, u) # in case u became smaller
+            h = gf_mod(gf_square_noreduce(h) << 1, u)
+
+        # assert h == gf_modexp(GF_X, (2 ** deg) - 1, u)
+
+        d, _, u = gf_gcd_split(h ^ 1, u)
+        if d != 1:
+            if gf_deg(d) == deg:
+                factors.append(d)
+            else:
+                todo[deg] = d
+
+        deg += 1
+
+    if u != 1:
+        factors.append(u)
+
+    for deg, u in todo.items():
+        # TODO same degree factorization
+        factors.append(u)
+
+    return factors
+
 # Berlekamp factorization, implemented according to TAOCP vol II 4.6.2 (p. 439)
-def gf_factor(u):
+def gf_factor_berlekamp(u):
     # divide by x as many times as possible, as an optimization.
     # this is extremely cheap compared to letting the regular code handle it.
     x_factors = []
@@ -548,13 +695,13 @@ def gf_factor(u):
         x_factors.append(0b10)
 
     # make u square free
-    square = gf_gcd(u, gf_formal_derivative(u))
+    (square, u, _) = gf_gcd_split(u, gf_formal_derivative(u))
     square_factors = []
     if square != 1:
-        square_factors = gf_factor(gf_sqrt(square))
-        u = gf_div(u, square)
-        if u == 1:
-            return x_factors + square_factors + square_factors
+        square_factors = gf_factor_berlekamp(gf_sqrt(square))
+    
+    if u == 1:
+        return x_factors + square_factors + square_factors
 
     # n is the degree of u
     n = u.bit_length() - 1
@@ -584,6 +731,9 @@ def gf_factor(u):
 
     orig_Q = Q[:]
 
+    # bitmask containing bits range(1, simple_part)
+    simple_mask = (1 << simple_part) - (1 << 1)
+
     # original description uses -1 as a sentinel for when c[i] is not set
     # we use a separate c_set bitmap for that.
     # additionally, c itself has key and value reversed to optimize lookups.
@@ -607,9 +757,6 @@ def gf_factor(u):
             # start with Q[k] without the effects of all previous loops iters
             tmp = orig_Q[k]
 
-            # bitmask containing bits range(1, simple_part)
-            mask = (1 << simple_part) - (1 << 1)
-
             # xor each bit i in range(1, simple_part) with bit i*2**{1..}
             # this will take 7 iterations (or fewer, if lsbs are zero or
             # the polynomial was shorter than 128 bits)
@@ -619,10 +766,10 @@ def gf_factor(u):
             # (in fact, if there was reduction, it would mess things up.
             #  we are using squaring just for its nice double-each-bits-
             #  position behavior in GF2)
-            sq = gf_square64(tmp & mask)
+            sq = gf_square64(tmp & simple_mask)
             for _ in range(6):
                 tmp ^= sq
-                sq = gf_square64(sq & mask)
+                sq = gf_square64(sq & simple_mask)
                 if sq == 0: break
             assert sq == 0
 
@@ -658,12 +805,21 @@ def gf_factor(u):
             # pattern which seems more difficult to hard-code, so we don't.
             assert c[1:simple_part] == list(range(1, simple_part))
 
-            # we'll build it in reverse, so this bit is bit k
-            v_r = 1
-            for s in reversed(c[:k]):
-                v_r <<= 1
+            v_r = (1 << k)
+            
+            # handle the simple part outside the loop, though it's identical to
+            # what the loop would have done
+            # technically this should limit to only the bits below k, but it
+            # works out (the only time this runs with k<simple_part is k==0,
+            # and that Q_k == 0)
+            v_r |= (Q_k & simple_mask)
+
+            # handle remaining columns
+            for i in range(simple_part, k):
+                s = c[i]
                 if s is not None:
-                    v_r |= (Q_k >> s) & 1
+                    v_r |= ((Q_k >> s) & 1) << i
+
             v.append(v_r)
 
         # loop invariant: for every v_i, v_i * Q == 0
@@ -684,6 +840,12 @@ def gf_factor(u):
     factors = [u]
     # skip v[0] = 1, which is not useful
     for v_i in v[1:]:
+        # ad-hoc optimization: we know u isn't divisible by x so remove those
+        # factors from v_i. we could have done this when creating v_i, but that
+        # would mess up the nice loop invariant.
+        while v_i & 1 == 0:
+            v_i >>= 1
+
         for f in factors[:]:
             # early exit if we've found all the factors
             if len(factors) == len(v): break
@@ -720,18 +882,23 @@ except ImportError:
     HAS_SAGE = False
     print("No sage support")
 
-for i in range(50):
+for i in range(5):
     x = gf_random()
-    factors = gf_factor(x)
+    
+    factors = gf_factor_berlekamp(x)
     factors.sort()
     print(f"factors of {hex(x)}:")
-    print(f"mine: {', '.join(hex(f) for f in factors)}")
+    print(f"berlekamp: {', '.join(hex(f) for f in factors)}")
     tmp = x
     for f in factors:
         q, r = gf_divmod(tmp, f)
         assert r == 0
         tmp = q
     assert q == 1
+    factors_cz = gf_factor_canzass(x)
+    factors_cz.sort()
+    print(f"canzass: {', '.join(hex(f) for f in factors_cz)}")
+
     if HAS_SAGE:
         tmp = gf_to_sage(x).polynomial().factor()
         assert tmp.unit() == 1
@@ -832,20 +999,127 @@ assert all(p in FERMAT_NUMBERS for p in FERMAT_PRIMES)
 assert all(x in FERMAT_NUMBERS for x in [641 * 6700417, 274177 * 67280421310721])
 
 # show multiplicative group structure
-for i in range(1, 32):
-    factors = [p for j, p in enumerate(FERMAT_PRIMES) if (i >> j) & 1]
+prev_order = None
+for i in range(1, 128):
+    factors = [p for j, p in enumerate(FERMAT_NUMBERS) if (i >> j) & 1]
+    if FERMAT_NUMBERS[5] in factors:
+        factors.remove(FERMAT_NUMBERS[5])
+        factors.extend([641, 6700417])
+    if FERMAT_NUMBERS[6] in factors:
+        factors.remove(FERMAT_NUMBERS[6])
+        factors.extend([274177, 67280421310721])
+    factors.sort()
     prod = product(factors)
     tot = euler_totient(factors)
-    print(f"cyclic multiplicative subgroup of order {prod}:")
+    print(f"cyclic multiplicative subgroup of order {hex(prod)}:")
+    if prev_order is not None:
+        print(f"    order is {prod / prev_order}x the previous order")
+    prev_order = prod
     print(f"    factors of group order: {factors!s}")
     gg = gf_pow(GF_GEN, GROUP_ORDER // prod)
     gf_assert_elem_order(gg, factors)
-    print(f"    subgroup has {tot} generators:")
+    print(f"    subgroup has {hex(tot)} generators:")
     print(f"    [gf_pow({hex(gg)}, x) ")
     print(f"        for x in range ({prod})")
     print(f"        if not any(x % p == 0 for p in {factors!r}))]")
-    print(f"    each of which has order {prod}")
-    print(f"    which means there are {tot} primitive {num_ordinal(prod)} roots of unity")
+    print(f"    each of which has order {hex(prod)}")
+    print(f"    which means there are {hex(tot)} primitive {num_ordinal(prod)} roots of unity")
+
+# the gf_square works only because the full group order is a product of these two numbers
+print(hex(GROUP_ORDER // 0xffffffffffffffff))
+a = gf_pow(GF_GEN, GROUP_ORDER // 0xffffffffffffffff)
+print(hex(GROUP_ORDER // 0x10000000000000001))
+b = gf_pow(GF_GEN, GROUP_ORDER // 0x10000000000000001)
+print(hex(a))
+print(hex(gf_mul(b, gf_square(GF_GEN))))
+print(hex(b))
+print(repr(gf_extended_euclidean(a, b)))
+
+# this has a nasty exponent
+print(hex(GROUP_ORDER // 0xffffffff))
+a = gf_pow(GF_GEN, GROUP_ORDER // 0xffffffff)
+print(hex(GROUP_ORDER // 0x100000001))
+b = gf_pow(GF_GEN, GROUP_ORDER // 0x100000001)
+print(hex(a))
+print(hex(gf_mul(b, gf_pow(GF_GEN, 0x20000000000000002))))
+print(hex(b))
+print(repr(gf_extended_euclidean(a, b)))
+
+# but it does if we go into a subgroup
+gg = gf_pow(GF_GEN, GROUP_ORDER // (0xffffffff * 0x100000001))
+print(hex(0xffffffff * 0x100000001 // 0xffffffff))
+a = gf_pow(gg, (0xffffffff * 0x100000001) // 0xffffffff)
+print(hex(0xffffffff * 0x100000001 // 0x100000001))
+print(hex((0xffffffff * 0x100000001) // 0x100000001))
+b = gf_pow(gg, (0xffffffff * 0x100000001) // 0x100000001)
+print(hex(a))
+print(hex(gf_mul(b, gf_pow(gg, 0x2))))
+print(hex(b))
+print(repr(gf_extended_euclidean(a, b)))
+c = gf_pow(gg, 0x100000000)
+print(repr(gf_extended_euclidean(a, c)))
+print(repr(gf_extended_euclidean(b, c)))
+
+# wouldn't this be nice? but we can't distinguish squares in characteristic 2
+# (or rather, everything is a square)
+# https://www.ijltemas.in/DigitalLibrary/Vol.5Issue2/06-07.pdf
+
+# this paper suggests x**2 + x as an alternative to quadratic reciprocity in char 2
+# note: this operation does not stay within a multiplicative group
+# also the property itself is additive, not multiplicative
+# https://kconrad.math.uconn.edu/blurbs/ugradnumthy/QRchar2.pdf
+# apply x ** 2 + x to g**x:
+# g**(2x) + g**x
+# (g**x)**2 + g**(sqrt(x))**2
+# (g**x)**2 + sqrt(g**x)**2
+# (g**x + sqrt(g**x))**2
+foo = gf_random() # actually a random exponent < ((1 << 128) - 1)... probably
+bar = gf_pow(GF_GEN, foo)
+assert gf_square(bar) ^ bar == gf_square(bar ^ gf_sqrt(bar))
+
+
+
+
+
+# looking at baby-step-giant-step:
+# g**x == g**(q*m+r)
+# and then setting m = 2**(2**i) so we can use all the cool frobenius identities.
+# unfortunately, the multiplications mangle additive structure.
+
+# g**x == (g**q)**m * g**r
+# g**x / g**r == (g**q)**m
+# (g**x / g**r)**(1/m) == (g**q)
+# (g**x)**(1/m) / (g**r)**(1/m) == (g**q)
+# (g**x)**(1/m) == (g**q) * (g**r)**(1/m)
+
+# g**x == (g**q)**m * g**r
+# g**x / g**r == (g**q)**m
+# we can decompose both g**r and g**q into a product-of-squares,
+# and we can decompose **m and **(1/m) into a sum-of-products,
+# or just see it as a single-term product of squares
+
+# additional option: we can decompose g**r or g**q this way:
+# g ** (r[0] * 1 + r[1] * 2 + r[2..4] * 4 + r[4..8] * 8 ...)
+# g**(r[0] * 1) * g**(r[1] * 2) * g**(r[2..4] * 4) * g**(r[4..8] * 8) ...
+# frob1(g**r[0]) * frob2(g**r[1]) * frob4(g**r[2..4]) * frob8(g**r[4..8]) ...
+# or alternatively:
+# frob1(g)**r[0] * frob2(g)**r[1] * frob4(g)**r[2..4] * frob8(g)**r[4..8] ...
+# remembering that each frobn() represents a sum
+
+p = (1 << 64) | 1;  # not actually prime so just ignore the name
+gp = gf_pow(GF_GEN, GROUP_ORDER // p)
+m = (p - 1) // 2
+foo = gf_pow(gp, m)
+assert foo == gf_sqrt(gf_inverse(gp))
+assert foo == gf_inverse(gf_sqrt(gp))
+
+# g**x == (g**m)**q * g**r
+# g**x == g**(-1)**(1/2)**q * g**r
+# g**x == g**(r - q/2)
+# g**x == g**r / g**(q/2)
+# g**(2x) == g**(2r) / g**q
+# g**(2x) == gf_square(g**r) * gf_invert(g**q)
+
 
 # do a basic pohlig-hellman discrete logarithm computation as far as we can
 # with just the fermat primes, just to see if we can do anything useful with
@@ -879,10 +1153,83 @@ for p in FERMAT_PRIMES:
             xp = i
             break
         tmp = gf_mul(tmp, gp)
-    print(f"new: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {p}), {xp}) == {hp}")
 
     assert xp is not None
     assert gf_pow(gp, xp) == hp
+
+    # pretend we found this x in the form of x = (q * m + r) using bsgs
+    m = (p - 1) // 2
+    assert (p - 1) == 2 ** 2 ** (((p - 1).bit_length() - 1).bit_length() - 1) # m is of the form 2**2**i // 2
+    q, r = divmod(x, m)
+
+    # g**(2x) == gf_square(g**r) * gf_inverse(g**q)
+    # note that we can precalculate bit-by-bit tables for both
+    # gf_square and gf_inverse (inverse in this subgroup is equal
+    # to exponentiation by m * 2, which is of the required form 2**2**i)
+    # unfortunately, the multiply ruins the additive structure.
+    a = gf_square(gf_pow(gp, r))
+    b = gf_reduce(gf_inverse(gf_pow(gp, q)))
+    assert b == gf_pow(gf_pow(gp, q), m * 2)
+    assert gf_square(gf_pow(gp, x)) == gf_mul(a, b)
+
+    print(f"new: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {p}), {xp}) == gf_pow(h, GROUP_ORDER // {p})")
+
+    initial = hp
+    tmp = initial
+    elems = []
+    for i in range(33):
+        elems.append(tmp)
+        tmp = gf_square(tmp)
+        if tmp == initial:
+            elems.sort()
+            print(f"group has order {len(elems)}, elems: {repr(elems)}")
+            break
+    
+    prevelems = elems
+
+    initial = hp
+    tmp = initial
+    elems = []
+    for i in range(33):
+        elems.append(tmp)
+        tmp = gf_square(gf_square(tmp))
+        if tmp == initial:
+            elems.sort()
+            print(f"group has order {len(elems)}, elems: {repr(elems)}")
+            break
+
+    common = list(set(elems).intersection(prevelems))
+    common.sort()
+    print(f"intersection has {len(common)} elements: {repr(common)}")
+
+    # I have absolutely no idea what I'm doing BUT this is nice:
+    # 1 step per iteration: full group
+    # 2 steps per iteration: half group
+    # 3 steps per iteration: full group again
+    # 4 steps per iteration: quarter group
+
+    # (x * 2) + 1
+    # ((x * 2) + 1) * 2 + 1
+    #   = ((x * 2*2) + 1*2) + 1
+    #   = x * 2*2 + 1*2 + 1
+    # (x * 2*2 + 1*2 + 1) * 2 + 1
+    #   = x * 2*2*2 + 1*2*2 + 1*2 + 1
+    # (x * 2*2*2 + 1*2*2 + 1*2 + 1) * 2 + 1
+    #   = x * 2*2*2*2 + 1*2*2*2 + 1*2*2 + 1*2 + 1
+    # (x * 2*2*2*2 + 1*2*2*2 + 1*2*2 + 1*2 + 1) * 2 + 1
+    #   = x * 2*2*2*2*2 + 1*2*2*2*2 + 1*2*2*2 + 1*2*2 + 1*2 + 1
+
+    initial = hp
+    tmp = initial
+    elems = []
+    for i in range(100000):
+        elems.append(tmp)
+        tmp = gf_mul(gf_square(tmp), tmp)
+        if tmp == initial:
+            elems.sort()
+            print(f"weird group has order {len(elems)}, elems: {repr(elems[:128]) + ('...' if len(elems) > 128 else '')}")
+            break
+    
 
     if pp is None:
         pp = p
@@ -890,7 +1237,31 @@ for p in FERMAT_PRIMES:
         hpp = hp
         gpp = gp
     else:
-        print(f"prev: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {pp}), {xpp}) == {hpp}")
+        print(f"prev: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {pp}), {xpp}) == gf_pow(h, GROUP_ORDER // {pp})")
+
+        assert p - pp == 2
+        nexth = gf_pow(h, GROUP_ORDER // (pp * p))
+        assert hp == gf_pow(nexth, pp)
+        assert hpp == gf_pow(nexth, p)
+        assert hpp == gf_mul(hp, gf_square(nexth))
+        fakeh = gf_pow(nexth, p - 1)
+
+        nextg = gf_pow(GF_GEN, GROUP_ORDER // (pp * p))
+        assert gp == gf_pow(nextg, pp)
+        assert gpp == gf_pow(nextg, p)
+        assert gpp == gf_mul(gp, gf_square(nextg))
+        fakeg = gf_pow(nextg, p - 1)
+
+        assert gf_mul(gf_pow(gp, 10), gf_pow(nextg, 10)) == gf_pow(fakeg, 10)
+        assert gf_mul(gf_pow(fakeg, 10), gf_pow(nextg, 10)) == gf_pow(gpp, 10)
+
+
+        nextx = (xpp * p - xp * pp) * ((pp * p + 1) // 2) % (pp * p)
+        assert nextx == (xpp * (pp + 2) - xp * pp) * ((pp * p + 1) // 2) % (pp * p)
+        assert gf_pow(nextg, nextx) == nexth
+
+        assert gf_pow(fakeg, nextx) == fakeh
+
         (d, _, _, a, b) = extended_euclidean(pp, p)
         assert d == 1
         # a is the inverse of pp mod p
@@ -900,8 +1271,46 @@ for p in FERMAT_PRIMES:
         b %= pp
         assert (p * b) % pp == 1
         tmp = (xpp * b * p + xp * a * pp) % (pp * p)
+        print(f"xpp * {hex(b)} * p + xp * {hex(a)} * pp")
         assert tmp % pp  == xpp
         assert tmp % p == xp
+
+
+
+        # xpp * 0x8 * p + xp * 0x8 * pp
+        # 0x8 * (xpp * (t + 1) + xp * (t - 1))
+        # 0x8 * (xpp * t + xpp + xp * t - xp)
+        # 0x8 * ((xpp + xp) * t + xpp - xp)
+        t = p - 1 # this is a power of two
+        assert a == b == t // 2 # this is a power of two
+        print(repr((t // 2 * ((xpp + xp) * t + xpp - xp))))
+        print(repr(pp * p))
+        assert tmp == (t // 2 * ((xpp + xp) * t + xpp - xp)) % (pp * p)
+        # t//2 * ((xpp + xp) * t + xpp - xp)
+        # (xpp + xp) * t**2 // 2 + (xpp - xp) * t // 2
+        # ((xpp + xp) * t**2 + (xpp - xp) * t) // 2
+        #print(f"ext eucl {t} {pp * p} = " + repr(extended_euclidean(t, pp * p)))
+        assert t**2 % (p * pp) == 1 # t is its own inverse mod pp*p
+        # ((xpp + xp) * t**2 + (xpp - xp) * t) // 2
+        # ((xpp + xp) * 1 + (xpp - xp) * t) // 2
+        # ((xpp - xp) * t + xpp + xp) // 2
+        #print(f"ext eucl {2} {pp * p} = " + repr(extended_euclidean(2, pp * p)))
+        # inverse of 2 is ((pp * p) + 1) // 2 == t**2 // 2
+        # this happens to be the t value for the next iteration of the loop
+        # this actually applies for all powers of 2: inverse of 2**i is ((pp * p) + 1) // i
+        assert tmp == ((xpp - xp) * t + xpp + xp) * (t**2 // 2) % (pp * p)
+        # ((xpp - xp) * t + xpp + xp) // 2
+        # (xpp*t - xp*t + xpp + xp) // 2
+        # (xpp * (t+1) - xp * (t-1)) // 2
+        # (xpp * p - xp * pp) // 2
+        assert tmp == (xpp * p - xp * pp) * (t**2 // 2) % (pp * p)
+        # (xpp * (t+1) - xp * (t-1)) * next_t
+        # recurse:
+        # (((xpp * (t+1) - xp * (t-1)) * next_t) * (next_t+1) - next_xp * (next_t-1)) // 2
+        # (((xpp * (t+1) - xp * (t-1)) * next_t  * (next_t+1)) - next_xp * (next_t-1)) // 2
+        # (((xpp * (t+1) - xp * (t-1)) * next_t**2 + (xpp * (t+1) - xp * (t-1)) * next_t)) - next_xp * (next_t-1)) // 2
+
+
         xpp = tmp
         pp = pp * p
         hpp = gf_pow(h, GROUP_ORDER // pp)
@@ -910,6 +1319,16 @@ for p in FERMAT_PRIMES:
     assert gf_pow(gpp, xpp) == hpp
 
 print(f"gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {pp}), {xpp}) == {hpp}")
+
+# 1 0x80000000 0x80000000
+(d, _, _, a, b) = extended_euclidean(0xffffffff, 0xffffffff + 2)
+print(f"and then... {d} {a % (0xffffffff + 2)} {b % 0xffffffff}")
+
+# 1 0x8000000000000000 0x8000000000000000
+(d, _, _, a, b) = extended_euclidean(0xffffffffffffffff, 0xffffffffffffffff + 2)
+print(f"and then... {d} {a % (0xffffffffffffffff + 2)} {b % 0xffffffffffffffff}")
+
+
 
 # show how freshman's dream interacts with exponentiation-by-squaring:
 # (x+a)**12
@@ -951,6 +1370,26 @@ assert gf_pow(x ^ a, 12) == (
 # + (a**8 * b**4 * c**2 * x)
 # + (a**8 * b**4 * c**2 * d)
 
+# reformatted for clarity:
+#   (x**15                         )
+# + (x**14                      * d)
+# + (x**13               * c**2    )
+# + (x**12               * c**2 * d)
+# + (x**11        * b**4           )
+# + (x**10        * b**4        * d)
+# + (x**9         * b**4 * c**2    )
+# + (x**8         * b**4 * c**2 * d)
+# + (x**7  * a**8                  )
+# + (x**6  * a**8               * d)
+# + (x**5  * a**8        * c**2    )
+# + (x**4  * a**8        * c**2 * d)
+# + (x**3  * a**8 * b**4           )
+# + (x**2  * a**8 * b**4        * d)
+# + (x     * a**8 * b**4 * c**2    )
+# + (1     * a**8 * b**4 * c**2 * d)
+
+
+
 # maybe we can get further by putting even more additive terms in each
 # power of two, and then seeing if the sum-of-products form has useful
 # structure we can use to rull up a long polynomial into a shorter
@@ -989,6 +1428,79 @@ for i in range(128):
 
 assert acc == gf_pow(n, 0x10000)
 assert acc == gf_inverse(n)
+
+# flip it around and make a lookup for the value of bit 0 in the output
+# one interesting thing to note is that input bit 0 influences NONE of the output
+# bits except output bit 0.
+# also the lower bits in general tend to have little influence for the smaller groups
+bit_lookups = []
+for b in range(128):
+    acc = 0
+    for i in range(128):
+        if (GF_BIT_POWERS[3][i] >> b) & 1:
+            acc |= 1 << i
+    bit_lookups.append(acc)
+
+for i in range(100):
+    a = gf_random()
+    assert gf_pow(a, 0x100) & 1 == (a & bit_lookups[0]).bit_count() & 1
+
+# assert that the bits in acc are the ONLY ones that influence bit 0 in the output
+for i in range(100):
+    a = gf_random() & ~bit_lookups[0]
+    assert gf_pow(a, 0x100) & 1 == 0
+
+# separate loop so we can generate and print whichever table we want
+print("each row shows which input bits are xored to produce that output bit")
+m = []
+for b in range(128):
+    acc = 0
+    for i in range(128):
+        if (GF_BIT_POWERS[3][i] >> b) & 1:
+            acc |= 1 << i
+    m.append(acc)
+    print(f"{b:3d} {m[b]:0128b}")
+
+
+if False:
+
+    # use gaussian elimination to find 0x100-th root of bar 
+    # yes, this is basically pointless as there are much easier ways
+
+    foo = gf_pow(GF_GEN, GROUP_ORDER // 0x101)
+    bar = gf_pow(foo, 0x100)
+    assert gf_inverse(foo) == bar
+
+    print(bin(foo))
+
+    # add a result column to complete the equations
+    m = [(x << 1) | ((bar >> i) & 1) for i,x in enumerate(bit_lookups)]
+
+    # perform gaussian elimination
+    m.sort(reverse=True)
+    for i in range(0, 128):
+        if m[i].bit_length() < 1: continue
+        for j in range(0, 128):
+            if i == j: continue
+            if m[j] & (1 << (m[i].bit_length() - 1)):
+                m[j] ^= m[i]
+        m.sort(reverse=True)
+
+    # print matrix
+    for i in range(128):
+        print(f"{i:3d} {m[i]:0129b}")
+
+    # extract result
+    tmp = 0
+    for i in range(128):
+        # would be 128 - 1 - i as well, but we need to skip the result column
+        assert (m[i] >> (128 - i)) & 1
+        if m[i] & 1:
+            tmp |= 1 << (128 - 1 - i)
+
+    # check it
+    assert tmp == foo
+
 
 # if we didn't already know the order of n, what would this lookup tell us?
 # - if the order divides 0xffff, gf_pow(n, 0x10000) == n
@@ -1327,6 +1839,8 @@ def poly_modexp_simple(f, e, g):
 
     return prod
 
+poly_modexp = poly_modexp_simple
+
 
 def poly_modexp_fancy(f, e, g):
 
@@ -1427,7 +1941,7 @@ def into_mont(f, g, G):
 def from_mont(f, g, G):
     return mont_reduce(f, g, G)
 
-def poly_modexp(f, e, g):
+def poly_modexp_mont(f, e, g):
 
     orig_e = e
     orig_f = f[:]
@@ -1868,9 +2382,9 @@ def recover_auth_secret(ciphertexts):
     # tmp = [x.to_integer() for x in tmp]
     # print("sra: " + repr(tmp) + f" {time() - t}")
 
-    # t = time();
-    # tmp = poly_roots_bta(f)
-    # print("my bta: " + repr(tmp) + f" {time() - t}")
+    t = time();
+    tmp = poly_roots_bta(f)
+    print("my bta: " + repr(tmp) + f" {time() - t}")
 
     # A Computational Introduction to Number Theory and Algebra (v2.5)
     # by Victor Shoup
@@ -1912,7 +2426,9 @@ def recover_auth_secret(ciphertexts):
     # https://github.com/frereit/frereit.github.io/blob/main/wasm/cantor-zassenhaus/src/factorize.rs
     factors = [f]
     while len(factors) != len(f) - 1:
-        rand = [gf_random() for i in range(len(f) - 1)]
+        # rand = [gf_random() for i in range(len(f) - 1)]
+        # suggested by https://arxiv.org/pdf/1012.5322
+        rand = [gf_random(), 1]
         g = poly_modexp(rand, (1<<128) // 3, f)
 
         # (skipped code that does nothing for degree == 1)
