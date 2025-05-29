@@ -1158,11 +1158,12 @@ for p in FERMAT_PRIMES:
     assert gf_pow(gp, xp) == hp
 
     # pretend we found this x in the form of x = (q * m + r) using bsgs
+    # both q and r are sort-of in the range 0..m (ignoring the obvious edge case)
     m = (p - 1) // 2
     assert (p - 1) == 2 ** 2 ** (((p - 1).bit_length() - 1).bit_length() - 1) # m is of the form 2**2**i // 2
     q, r = divmod(x, m)
 
-    # g**(2x) == gf_square(g**r) * gf_inverse(g**q)
+    # gf_square(g**x) == gf_square(g**r) * gf_inverse(g**q)
     # note that we can precalculate bit-by-bit tables for both
     # gf_square and gf_inverse (inverse in this subgroup is equal
     # to exponentiation by m * 2, which is of the required form 2**2**i)
@@ -1174,6 +1175,10 @@ for p in FERMAT_PRIMES:
 
     print(f"new: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {p}), {xp}) == gf_pow(h, GROUP_ORDER // {p})")
 
+    # because of the group size being of the form 2**2**i + 1, repeated squaring
+    # wraps around once picking up all the inverses, and then cycles.
+    # g, g**2, ... g**2**2**i == g**(-1), g**(-2), ... g**2**2**(-i) == g
+
     initial = hp
     tmp = initial
     elems = []
@@ -1181,26 +1186,10 @@ for p in FERMAT_PRIMES:
         elems.append(tmp)
         tmp = gf_square(tmp)
         if tmp == initial:
-            elems.sort()
-            print(f"group has order {len(elems)}, elems: {repr(elems)}")
-            break
-    
-    prevelems = elems
-
-    initial = hp
-    tmp = initial
-    elems = []
-    for i in range(33):
-        elems.append(tmp)
-        tmp = gf_square(gf_square(tmp))
-        if tmp == initial:
-            elems.sort()
             print(f"group has order {len(elems)}, elems: {repr(elems)}")
             break
 
-    common = list(set(elems).intersection(prevelems))
-    common.sort()
-    print(f"intersection has {len(common)} elements: {repr(common)}")
+    assert gf_inverse(elems[0]) == elems[len(elems) // 2]
 
     # I have absolutely no idea what I'm doing BUT this is nice:
     # 1 step per iteration: full group

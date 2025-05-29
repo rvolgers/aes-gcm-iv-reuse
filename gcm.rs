@@ -10,6 +10,7 @@
 
 use std::iter;
 use std::convert::TryInto;
+use std::convert::TryFrom;
 use std::random::random;
 use std::random::DefaultRandomSource;
 use std::random::RandomSource;
@@ -37,6 +38,10 @@ fn find_roots_ntl_wrapper(poly: &[u128]) -> Vec<u128> {
 
 // high bit 128 is implicit
 const GF_POLY: u128 = (1 << 7) | (1 << 2) | (1 << 1) | 1;
+
+
+const GF_X: u128 = (1 << 1);
+const GF_GEN: u128 = GF_X;
 
 fn gf_from_bytes(b: [u8; 16]) -> u128 {
     u128::from_le_bytes(b).reverse_bits()
@@ -75,23 +80,35 @@ fn gf_square(x: u128) -> u128 {
     gf_mul(x, x)
 }
 
+// intersperses the bits of x with zero bits
+fn spread64(x: u64) -> u128 {
+    let x = x as u128;
+    let x = (x | (x << 32)) & 0x00000000_ffffffff_00000000_ffffffff;
+    let x = (x | (x << 16)) & 0x0000ffff_0000ffff_0000ffff_0000ffff;
+    let x = (x | (x << 8)) & 0x00ff00ff_00ff00ff_00ff00ff_00ff00ff;
+    let x = (x | (x << 4)) & 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f;
+    let x = (x | (x << 2)) & 0x33333333_33333333_33333333_33333333;
+    let x = (x | (x << 1)) & 0x55555555_55555555_55555555_55555555;
+    x
+}
+
+// reverse of spread64
+fn unspread64(x: u128) -> u64 {
+    let x = x & 0x55555555_55555555_55555555_55555555;
+    let x = (x | (x >> 1)) & 0x33333333_33333333_33333333_33333333;
+    let x = (x | (x >> 2)) & 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f;
+    let x = (x | (x >> 4)) & 0x00ff00ff_00ff00ff_00ff00ff_00ff00ff;
+    let x = (x | (x >> 8)) & 0x0000ffff_0000ffff_0000ffff_0000ffff;
+    let x = (x | (x >> 16)) & 0x00000000_ffffffff_00000000_ffffffff;
+    let x = (x | (x >> 32)) as u64;
+    x
+}
+
 #[cfg(not(all(
     target_feature = "pclmulqdq",
     any(target_arch = "x86", target_arch = "x86_64")
 )))]
 fn gf_square(x: u128) -> u128 {
-    // intersperses the bits of x with zero bits
-    fn spread64(x: u64) -> u128 {
-        let x = x as u128;
-        let x = (x | (x << 32)) & 0x00000000_ffffffff_00000000_ffffffff;
-        let x = (x | (x << 16)) & 0x0000ffff_0000ffff_0000ffff_0000ffff;
-        let x = (x | (x << 8)) & 0x00ff00ff_00ff00ff_00ff00ff_00ff00ff;
-        let x = (x | (x << 4)) & 0x0f0f0f0f_0f0f0f0f_0f0f0f0f_0f0f0f0f;
-        let x = (x | (x << 2)) & 0x33333333_33333333_33333333_33333333;
-        let x = (x | (x << 1)) & 0x55555555_55555555_55555555_55555555;
-        x
-    }
-
     let lo = spread64(x as u64);
     let hi = spread64((x >> 64) as u64);
     gf_reduce(lo, hi)
@@ -180,6 +197,39 @@ fn gf_mul(a: u128, b: u128) -> u128 {
     }
 }
 
+#[cfg(all(
+    target_feature = "pclmulqdq",
+    any(target_arch = "x86", target_arch = "x86_64")
+))]
+fn gf_square64(x: u64) -> u128 {
+    use std::arch::x86_64::*;
+    unsafe {
+        let a = _mm_set1_epi64x(x as i64);
+        let b = _mm_clmulepi64_si128(a, a, 0x00);
+        ((_mm_extract_epi64(b, 1) as u64 as u128) << 64) |
+            (_mm_cvtsi128_si64(b) as u64 as u128)
+    }
+}
+
+#[cfg(not(all(
+    target_feature = "pclmulqdq",
+    any(target_arch = "x86", target_arch = "x86_64")
+)))]
+fn gf_square64(x: u64) -> u128 {
+    spread64(x)
+}
+
+
+// GF_SQRT_X == gf_pow(GF_X, 1 << 127)
+// gf_square(GF_SQRT_X) == GF_X
+const GF_SQRT_X: u128 = 0x24924924924924926db6db6db6db6da4;
+
+fn gf_sqrt(x: u128) -> u128 {
+    let even = unspread64(x) as u128;
+    let odd = unspread64(x >> 1) as u128;
+    gf_mul(odd, GF_SQRT_X) ^ even
+}
+
 fn gf_pow(mut x: u128, mut e: u128) -> u128 {
     let mut result: u128 = 1;
 
@@ -256,6 +306,214 @@ fn gf_inverse(x: u128) -> u128 {
     }
 
     v1
+}
+
+fn gf_divmod(x: u128, y: u128) -> (u128, u128) {
+    let mut q = 0;
+    let mut r = x;
+
+    while let Some(s) = r.bit_len().checked_sub(y.bit_len()) {
+        r ^= y << s;
+        q ^= 1 << s;
+    }
+
+    (q, r)
+}
+
+fn gf_div_exact(x: u128, y: u128) -> u128 {
+    let (q, r) = gf_divmod(x, y);
+
+    assert!(r == 0);
+
+    q
+}
+
+fn gf_mod(x: u128, y: u128) -> u128 {
+    let (q, r) = gf_divmod(x, y);
+    r
+}
+
+fn gf_extended_euclidean(x: u128, y: u128) -> (u128, u128, u128, u128, u128) {
+    let (mut u1, mut u2, mut u3) = (0u128, 1u128, y);
+    let (mut v1, mut v2, mut v3) = (1u128, 0u128, x);
+
+    while v3 != 0 {
+        // assert!(gf_mul(x, u1) ^ gf_mul(y, u2) == u3);
+        // assert!(gf_mul(x, v1) ^ gf_mul(y, v2) == v3);
+
+        let (mut t1, mut t2, mut t3) = (u1, u2, u3);
+        if let Some(q) = u3.bit_len().checked_sub(v3.bit_len()) {
+            t1 ^= v1 << q;
+            t2 ^= v2 << q;
+            t3 ^= v3 << q;
+        }
+        (u1, u2, u3) = (v1, v2, v3);
+        (v1, v2, v3) = (t1, t2, t3);
+    }
+
+    // assert!(v2 == gf_div_exact(x, u3));
+    // assert!(v1 == gf_div_exact(y, u3));
+    // println!("x={x:x} y={y:x} v1={v1:x} v2={v2:x} u1={u1:x} u2={u2:x} u3={u3:x}");
+    // dbg!(gf_mul(x, v1) ^ gf_mul(y, v2));
+    // assert!(gf_mul(x, v1) ^ gf_mul(y, v2) == 0);
+    // dbg!(gf_mul(x, u1) ^ gf_mul(y, u2));
+    // assert!(gf_mul(x, u1) ^ gf_mul(y, u2) == u3);
+
+    (u3, v2, v1, u1, u2)
+}
+
+fn gf_formal_derivative(x: u128) -> u128 {
+    (x >> 1) & 0x55555555_55555555_55555555_55555555
+}
+
+// this implements berlekamp factorization, which is not a great
+// choice really, it just has a lot of fun moving parts and I
+// wanted to play with it and see how much room there was for
+// optimization. the answer is "more than you'd think, but not
+// enough to make it competitive with nondeterministic methods"
+// as always a lot of prototyping was done in the python file.
+#[inline(never)]
+fn gf_factor(u: u128) -> Vec<u128> {
+
+    let power_of_x = u.trailing_zeros();
+    let u = u >> power_of_x;
+
+    // there is probably a lot to be gained by adding some good
+    // trial division code to weed out more small factors here.
+    // however, that's kind of boring and it makes optimizations
+    // to the rest of the code less impactful.
+    // it does actually help worst case performance though, since
+    // many smaller factors means more work left to the last phase.
+
+    let mut factors = vec![GF_X; power_of_x as usize];
+
+    // FIXME think this through a bit more, are we handling all cases correctly?
+    let (square, u_div_gcd, ..) = gf_extended_euclidean(u, gf_formal_derivative(u));
+    let square_factors = if square != 1 {
+        gf_factor(gf_sqrt(square))
+    } else {
+        vec![]
+    };
+    factors.extend_from_slice(&square_factors);
+    factors.extend_from_slice(&square_factors);
+    let u = u_div_gcd;
+
+    if u == 1 {
+        return factors;
+    }
+
+    let n = u.bit_len() as usize - 1;
+
+    let mut q = [0u128; 128];
+    let high_bit = 1u128 << n;
+
+    let simple_part = n.div_ceil(2);
+
+    // bits 1..simple_part are set
+    let simple_mask = (1u128 << simple_part) - (1u128 << 1);
+
+    // this implementation completely omits doing anything
+    // for the first `simple_part` entries of q, instead
+    // opting to do a little extra work to emulate the effect
+    // of those loop iterations on each later row in a
+    // single pass.
+    // I've not bothered to actually shorten q (and c)
+    // because it's unlikely to have much effect and
+    // rearranging the indices is a hassle.
+    let mut prev = 1 << (2 * (simple_part - 1));
+    for i in simple_part..n {
+        let mut tmp = prev;
+        tmp <<= 1;
+        if tmp & high_bit != 0 {
+            tmp ^= u;
+        }
+        tmp <<= 1;
+        if tmp & high_bit != 0 {
+            tmp ^= u;
+        }
+        prev = tmp;
+
+        tmp ^= 1 << i;
+
+        let mut sq = gf_square64((tmp & simple_mask) as u64);
+        for _ in 0..6 {
+            tmp ^= sq;
+            sq = gf_square64((sq & simple_mask) as u64);
+        }
+        assert!(sq == 0);
+
+        q[i] = tmp;
+    }
+
+    let mut c = [-1i8; 128];
+    for i in 1..simple_part {
+        c[i] = i as i8;
+    }
+    let mut c_set = simple_mask;
+
+    let mut v = vec![];
+
+    // println!("n={n} simple_part={simple_part}");
+
+    let byte_aligned_mask = 0x01010101_01010101_01010101_01010101;
+
+    for k in simple_part..n {
+        let q_k = q[k];
+        let tmp = (q_k & !c_set);
+        let mut j = (tmp & (byte_aligned_mask << (k & 7))).trailing_zeros();
+        if j == 128 {
+            j = tmp.trailing_zeros();
+        }
+        // assert!(j == 128 || (q_k >> j) & 1 != 0);
+        // assert!(j == 128 || (c_set >> j) & 1 == 0);
+
+        if j < 128 {
+            let bit_j = 1 << j;
+            let q_k_without_bit_j = q_k ^ bit_j;
+            for i in k..n {
+                if q[i] & bit_j != 0 {
+                    q[i] ^= q_k_without_bit_j;
+                }
+            }
+            c_set |= bit_j;
+            c[k] = j as i8;
+        } else {
+            let mut v_r = (1 << k) | (q_k & simple_mask);
+
+            for i in simple_part..k {
+                if let Ok(s) = u32::try_from(c[i]) {
+                    v_r |= ((q_k >> s) & 1) << i;
+                }
+            }
+
+            v.push(v_r);
+        }
+
+        let q_k = q[k];
+        let good = if (j as usize - (k & 7)) & 7 == 0 { 1 } else { 0 };
+        // println!("q_{k} = {q_k:#0128b} {good}");
+    }
+
+    let mut tmp = vec![u,];
+    for mut v_i in v.iter().copied() {
+        v_i >>= v_i.trailing_zeros();
+
+        let origlen = tmp.len();
+        for j in 0..origlen {
+            if tmp.len() == v.len() {
+                break;
+            }
+
+            let gcd;
+            (gcd, tmp[j], ..) = gf_extended_euclidean(tmp[j], v_i);
+            if gcd != 1 {
+                tmp.push(gcd);
+            }
+        }
+    }
+
+    factors.extend(tmp);
+    factors
 }
 
 const POLY_ZERO: &[u128] = &[];
@@ -674,11 +932,11 @@ fn main() {
     let mut iv: [u8; 12] = [0; 12];
     (&mut DefaultRandomSource).fill_bytes(&mut iv);
 
-    let mut ciphertext1 = vec![0; 4 * 1024];
+    let mut ciphertext1 = vec![0; 14 * 1024];
     (&mut DefaultRandomSource).fill_bytes(&mut ciphertext1);
     ciphertext1.extend_from_slice(&auth_tag(auth_key, keyblock_0, &ciphertext1, &[]));
 
-    let mut ciphertext2 = vec![0; 4 * 1024];
+    let mut ciphertext2 = vec![0; 14 * 1024];
     (&mut DefaultRandomSource).fill_bytes(&mut ciphertext2);
     ciphertext2.extend_from_slice(&auth_tag(auth_key, keyblock_0, &ciphertext2, &[]));
 
@@ -693,5 +951,22 @@ fn main() {
     assert!(candidates.contains(&(auth_key, keyblock_0)));
 
 
+    let mut ciphertext1 = vec![0; 16 * 100 * 1000];
+    (&mut DefaultRandomSource).fill_bytes(&mut ciphertext1);
+    let factor_inputs = ciphertext1.array_chunks().copied().map(gf_from_bytes);
+
+    let now = Instant::now();
+    for x in factor_inputs {
+        // println!("factoring {x}");
+        let factors = gf_factor(x);
+        let mut tmp = 1;
+        for f in factors {
+            // println!("    factor {f}");
+            tmp = gf_mul(tmp, f);
+        }
+        assert_eq!(tmp, x);
+    }
+
+    println!("gf_factor took {:?}", now.elapsed());
 
 }
