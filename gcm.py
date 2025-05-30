@@ -1404,8 +1404,20 @@ if HAS_SAGE:
     assert gf_square(foo) == gf_from_sage_vector(gf_to_sage_vector(foo) * A)
 
     # 2**32 == 2**2**5
-    assert GF_BIT_POWERS[5] == [gf_from_sage_vector(v) for v in A**32]
-    #print(repr(list(A**32)))
+    A32 = A**32
+    assert GF_BIT_POWERS[5] == [gf_from_sage_vector(v) for v in A32]
+
+    # sum with identity matrix and calculate the null space (aka kernel)
+    sage_kern = (A32 + SAGE_GFM128.identity_matrix()).kernel()
+
+    # get a random element and verify it is invariant under 32 squarings
+    foo = gf_from_sage_vector(sage_kern.random_element())
+    assert foo == gf_pow(foo, 2**32)
+
+    # use basis() as iterating it directly will give combinations of the basis
+    kern = [gf_from_sage_vector(v) for v in sage_kern.basis()]
+    # print('\n'.join(f"{i}: {bin(x)}" for i, x in enumerate(kern)))
+
 
 
 # show how to calculate exponentiation by power of two as a sum of bit lookups
