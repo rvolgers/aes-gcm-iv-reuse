@@ -1158,11 +1158,12 @@ for p in FERMAT_PRIMES:
         q, r = divmod(xp, m)
 
         assert hp == gf_pow(gp, (q * m + r))
+        assert hp == gf_mul(gf_pow(gf_pow(gp, q), m), gf_pow(gp, r))
 
     print(f"new: gf_pow(gf_pow(GF_GEN, GROUP_ORDER // {p}), {xp}) == gf_pow(h, GROUP_ORDER // {p})")
 
     # because of the group size being of the form 2**2**i + 1, repeated squaring
-    # wraps around once picking up all the inverses, and then cycles.
+    # wraps around once, picking up all the inverses, and then cycles.
     # g, g**2, ... g**2**2**i == g**(-1), g**(-2), ... g**2**2**(-i) == g
 
     initial = hp
@@ -1172,10 +1173,31 @@ for p in FERMAT_PRIMES:
         elems.append(tmp)
         tmp = gf_square(tmp)
         if tmp == initial:
-            print(f"group has order {len(elems)}, elems: {repr(elems)}")
+            print(f"sequence has order {len(elems)}, elems: {repr(elems)}")
             break
 
-    assert gf_inverse(elems[0]) == elems[len(elems) // 2]
+    # show where every element's inverse and square root are located
+    # (square roots are obvious except the wraparound for i=0)
+    for i, e in enumerate(elems):
+        assert gf_inverse(e) == elems[(i + len(elems) // 2) % len(elems)]
+        assert gf_sqrt(e) == elems[(i - 1) % len(elems)]
+
+    # no element is its own inverse <=> there is no element of order 2
+    # so 1 is only in the sequence if it was the start value
+    assert elems == [1] or 1 not in elems
+    assert elems == [1] or len(elems) == (p.bit_length() - 1) * 2
+
+    # we could take a representative element (say, the maximum) from every such sequence
+    # and use that to build an index.
+
+    # failed attempt at another way to construct a cyclic function that returns a subset
+    assert gf_pow(gp, p - 1) == gf_inverse(gp)
+    foo = (p - 1) // 8
+    bar = gf_pow(gp, foo)
+    # the problem is we find the inverse of gp here, not the inverse of bar
+    assert foo < 2 or gf_pow(bar, 8) == gf_inverse(gp)
+    # so instead of being 1, the next item in the sequence is just a lower power of gp
+    assert foo < 2 or gf_pow(bar, 9) == gf_pow(gp, foo - 1)
 
     if pp is None:
         pp = p
@@ -1361,6 +1383,30 @@ GF_BIT_POWERS = [
     [gf_pow(1 << b, 1 << (1 << e)) for b in range(128)]
     for e in range(8)
 ]
+
+if HAS_SAGE:
+    from sage.all import MatrixSpace, VectorSpace
+    SAGE_GFV = VectorSpace(GF(2), 128)
+    def gf_to_sage_vector(x): return SAGE_GFV(int_to_bitlist(x, 128))
+    def gf_from_sage_vector(v): return bitlist_to_int(map(int, v))
+    SAGE_GFM128 = MatrixSpace(GF(2), 128)
+
+    # GF_BIT_POWERS[0] represents a matrix such that multiplying a vector
+    # containing the coefficients of a polynomial in the GCM field is equal
+    # to squaring and reducing the polynomial directly.
+    A = SAGE_GFM128([gf_to_sage_vector(x) for x in GF_BIT_POWERS[0]])
+
+    # print(repr(A.charpoly()))  # x^128 + 1
+    # print(repr(A.minpoly().factor()))  # (x + 1)^128
+
+    # verify the the matrix by using it to square a random value
+    foo = gf_random()
+    assert gf_square(foo) == gf_from_sage_vector(gf_to_sage_vector(foo) * A)
+
+    # 2**32 == 2**2**5
+    assert GF_BIT_POWERS[5] == [gf_from_sage_vector(v) for v in A**32]
+    #print(repr(list(A**32)))
+
 
 # show how to calculate exponentiation by power of two as a sum of bit lookups
 # this uses freshman's dream
