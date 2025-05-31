@@ -1060,6 +1060,60 @@ c = gf_pow(gg, 0x100000000)
 print(repr(gf_extended_euclidean(a, c)))
 print(repr(gf_extended_euclidean(b, c)))
 
+def gfmat_minus_identity(m):
+    m = m[:]
+    for i in range(len(m)):
+        m[i] ^= 1 << i
+    return m
+
+def gfmat_kernel(m):
+
+    # most of this was reused from gf_factor_berlekamp, just tidied up
+
+    n = 128
+    m = m[:]
+    assert len(m) == n
+
+    pivots = [None] * n
+    pivots_used = 0
+    kernel = []
+    for i in range(n):
+        mi = m[i]
+
+        # print(f"m[{i:3d}] = {''.join(map(str, int_to_bitlist(mi, n)))}")
+
+        # valid pivot columns must be set in mi and not have been used
+        available = mi & ~pivots_used
+
+        if available:
+            p = next(j for j in range(n) if available & (1 << j))
+            for j in range(i, n):
+                if m[j] & (1 << p):
+                    m[j] ^= mi ^ (1 << p) # xor with mi-without-bit-p
+            pivots_used |= 1 << p
+            pivots[i] = p
+        else:
+            tmp = 1 << i
+            for j, pj in enumerate(pivots[:i]):
+                if pj is not None and mi & (1 << pj):
+                    tmp |= 1 << j
+            kernel.append(tmp)
+
+        # loop invariant: for every row k in kernel, k * m == 0
+        # we can use a generic matmul even though we want binary matmul,
+        # because bitlist_to_int discards all but the low bit.
+        # for k in kernel:
+        #      tmp = mat_mul([int_to_bitlist(k, n)], [int_to_bitlist(x, n) for x in m])
+        #      tmp = bitlist_to_int(tmp[0])
+        #      assert tmp == 0
+
+    # for j,x in enumerate(m):
+    #     print(f"m[{j:3d}] = {''.join(map(str, int_to_bitlist(x, n)))}")
+
+    # for j,x in enumerate(kernel):
+    #     print(f"k[{j:3d}] = {''.join(map(str, int_to_bitlist(x, n)))}")
+
+    return kernel
 
 
 GF_BIT_POWERS = [
@@ -1110,6 +1164,16 @@ if HAS_SAGE:
         print("        " + '\n        '.join(f"{x:#0130b}," for x in GF_KERN[i]))
         print("    ],")
     print("]")
+
+    # calculate kernel entirely in python
+    my_kern = gfmat_kernel(gfmat_minus_identity(GF_BIT_POWERS[5]))
+
+    foo = gf_random()
+    acc = 0
+    for j,x in enumerate(my_kern):
+        if foo & (1 << j):
+            acc ^= x
+    assert acc == gf_pow(acc, 2**32)
 
 else:
     GF_KERN = [
