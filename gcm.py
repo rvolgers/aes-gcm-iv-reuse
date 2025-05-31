@@ -1068,51 +1068,72 @@ def gfmat_minus_identity(m):
 
 def gfmat_kernel(m):
 
-    # most of this was reused from gf_factor_berlekamp, just tidied up
+    # most of this was reused from gf_factor_berlekamp, just tidied up.
+    # could have rewritten that to use this function, but that would lose
+    # all the comments/asserts/exposition in that function only relevant
+    # to that specific use case.
 
-    n = 128
+    # see "Algorithm N: Null space algorithm" TAOCP vol II 4.6.2 (p. 439)
+    # although variable names are different and a lot of stuff has been
+    # specialized / optimized for GF(2).
+
+    # we assume the matrix is n*n square. we can't really tell because python
+    # ints have no length independent of their value.
+    n = len(m)
     m = m[:]
-    assert len(m) == n
 
     pivots = []
     pivots_used = 0
     kernel = []
-    for i in range(n):
-        mi = m[i]
+    for r in range(n):
+        mr = m[r]
 
-        # print(f"m[{i:3d}] = {''.join(map(str, int_to_bitlist(mi, n)))}")
+        # print(f"m[{r:3d}] = {''.join(map(str, int_to_bitlist(mr, n)))}")
 
-        # valid pivot columns must be set in mi and not have been used
-        available = mi & ~pivots_used
+        # valid pivot columns must be set in mr and not have been used
+        available = mr & ~pivots_used
 
         if available:
-            p = count_trailing_zeros(available) # pick the first one.
-            for j in range(i, n):
-                if m[j] & (1 << p):
-                    m[j] ^= mi ^ (1 << p) # xor with mi-without-bit-p
-            pivots_used |= 1 << p
-            pivots.append(p)
+            # just pick the first available one.
+            # I believe we have freedom to choose, except that the rationale
+            # for skipping the first (r - 1) rows in the next loop requires
+            # the criteria for selection to be consistent between rows.
+            # messing with the forward progress of the algorithm by changing
+            # previous rows like that is probably also a bad thing.
+            pc = count_trailing_zeros(available)
+
+            # zero out all the other columns in the current row, by adding
+            # (i.e. xor'ing) column pc to other columns which are 1 in mr.
+            # note that previous rows are 0 in column pc. so the operation
+            # would do nothing, and we can skip them.
+            for j in range(r, n):
+                if m[j] & (1 << pc):
+                    m[j] ^= mr ^ (1 << pc) # xor with mr-without-bit-pc
+
+            pivots_used |= 1 << pc
+            pivots.append(pc)
         else:
-            tmp = 1 << i
-            for j, pj in enumerate(pivots):
-                if pj is not None and mi & (1 << pj):
-                    tmp |= 1 << j
-            kernel.append(tmp)
+            k = 1 << r
+            assert len(pivots) == r
+            for pr, pc in enumerate(pivots):
+                if pc is not None and mr & (1 << pc):
+                    k |= 1 << pr
+            kernel.append(k)
             pivots.append(None)
 
         # loop invariant: for every row k in kernel, k * m == 0
         # we can use a generic matmul even though we want binary matmul,
         # because bitlist_to_int discards all but the low bit.
         # for k in kernel:
-        #      tmp = mat_mul([int_to_bitlist(k, n)], [int_to_bitlist(x, n) for x in m])
+        #      tmp = mat_mul([int_to_bitlist(k, n)], [int_to_bitlist(mr, n) for mr in m])
         #      tmp = bitlist_to_int(tmp[0])
         #      assert tmp == 0
 
-    # for j,x in enumerate(m):
-    #     print(f"m[{j:3d}] = {''.join(map(str, int_to_bitlist(x, n)))}")
+    # for r, mr in enumerate(m):
+    #     print(f"m[{r:3d}] = {''.join(map(str, int_to_bitlist(mr, n)))}")
 
-    # for j,x in enumerate(kernel):
-    #     print(f"k[{j:3d}] = {''.join(map(str, int_to_bitlist(x, n)))}")
+    # for i, k in enumerate(kernel):
+    #     print(f"k[{i:3d}] = {''.join(map(str, int_to_bitlist(k, n)))}")
 
     return kernel
 
