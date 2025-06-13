@@ -8,7 +8,6 @@
 from collections import Counter
 from copy import deepcopy
 from math import gcd, isqrt
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import itertools
 from random import getrandbits
@@ -16,16 +15,8 @@ from time import time
 from functools import reduce
 import operator
 
-# count trailing zeroes
-def count_trailing_zeros(x):
-    # implementations differ in how/if ctz(0) is defined, so avoid it
-    assert x != 0
-
-    # (x ^ (x - 1)) isolates the lowest 1 bit
-    # 0b110000 - 1 = 0b101111
-    # 0b110000 ^ (0b110000 - 1) = 0b10000
-
-    return (x ^ (x - 1)).bit_length() - 1
+from gf2poly import *
+from rijndael import Rijndael
 
 ##############################################
 # code for operating on numbers in GF(2^128) #
@@ -71,21 +62,6 @@ def gf_to_bytes(x):
 
 def gf_random():
     return getrandbits(128)
-
-# non-reducing version of gf_mul, used for experimentation
-def gf_mul_noreduce(x, y):
-    result = 0
-    while True:
-        if y & 1:
-            result ^= x
-
-        y >>= 1
-        if y == 0:
-            break
-
-        x <<= 1
-
-    return result
 
 ALL64 = (1 << 64) - 1
 ALL128 = (1 << 128) - 1
@@ -478,44 +454,9 @@ def gf_inverse_mod_power_of_two(x, e):
 gf_inverse_mod_power_of_two(1337, (1337).bit_length())
 gf_inverse_mod_power_of_two(1337, 20)
 
-def gf_modexp(x, e, m):
-
-    result = 1
-    sq = x
-    for i in range(e.bit_length()):
-        if (e >> i) & 1:
-            result = gf_mod(gf_mul_noreduce(result, sq), m)
-
-        sq = gf_mod(gf_square_noreduce(sq), m)
-    
-    return result
-
 # some small irreducble polynomials over GF2
 # https://oeis.org/A014580
 GF_IRREDUCIBLES = [2, 3, 7, 11, 13, 19, 25, 31, 37, 41, 47, 55, 59, 61, 67, 73, 87, 91, 97, 103, 109, 115, 117, 131, 137, 143, 145, 157, 167, 171, 185, 191, 193, 203, 211, 213, 229, 239, 241, 247, 253, 283, 285, 299, 301, 313, 319, 333, 351, 355, 357, 361, 369, 375]
-
-# not specific to GF(2**128), works with unreduced inputs
-def gf_divmod(x, y):
-    q = 0
-    r = x
-
-    s = r.bit_length() - y.bit_length()
-    while s >= 0:
-        r ^= y << s
-        q ^= 1 << s
-        s = r.bit_length() - y.bit_length()
-
-    return (q, r)
-
-# not specific to GF(2**128), works with unreduced inputs
-def gf_mod(x, y):
-    return gf_divmod(x, y)[1]
-
-# not specific to GF(2**128), works with unreduced inputs
-def gf_div(x, y):
-    q, r = gf_divmod(x, y)
-    assert r == 0
-    return q
 
 # extended euclidean algorithm for integers
 # based on https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Pseudocode
@@ -551,56 +492,8 @@ for a in range(1,15):
     for b in range(1,15):
         extended_euclidean(a, b)
 
-# fully-featured extended euclidean algorithm on binary polynomials.
-# this is not specific to GF(2**128) and works with unreduced inputs.
-# returns tuple (gcd(x, y), x // gcd(x, y), y // gcd(x, y), xc, yc)
-# xc and yc are the bezout coefficients such that x * xc + y * yc == gcd(x, y)
-# if the gcd is 1, then xc is the inverse of x mod y, and similar for yc
-def gf_extended_euclidean(x, y):
-    # https://en.wikipedia.org/wiki/Extended_Euclidean_algorithm#Computing_multiplicative_inverses_in_modular_structures
-    # https://en.wikipedia.org/wiki/Polynomial_greatest_common_divisor#B%C3%A9zout's_identity_and_extended_GCD_algorithm
-    # https://crypto.stackexchange.com/questions/12956/multiplicative-inverse-in-operatornamegf28/12962#12962
-    # https://crypto.stackexchange.com/a/83544
-
-    (u1, u2, u3) = (0, 1, y)
-    (v1, v2, v3) = (1, 0, x)
-
-    while v3 != 0:
-        # bezout's identity
-        assert gf_mul_noreduce(x, u1) ^ gf_mul_noreduce(y, u2) == u3
-        assert gf_mul_noreduce(x, v1) ^ gf_mul_noreduce(y, v2) == v3
-
-        (t1, t2, t3) = (u1, u2, u3)
-        q = u3.bit_length() - v3.bit_length()
-        if q >= 0:
-            t1 ^= v1 << q
-            t2 ^= v2 << q
-            t3 ^= v3 << q
-        (u1, u2, u3) = (v1, v2, v3)
-        (v1, v2, v3) = (t1, t2, t3)
-
-    # assert gf_mul(gf_mul(gf_div(x, u3), gf_div(y, u3)), gf_square(u3)) == gf_mul(x, y)
-    # v2 and v1 are x and y divided by the gcd
-    assert v2 == gf_div(x, u3) and v1 == gf_div(y, u3)
-    # u1 and u2 are the bezout coefficients
-    assert gf_mul_noreduce(x, u1) ^ gf_mul_noreduce(y, u2) == u3
-    # if the gcd was 1
-    if u3 == 1:
-        # then u1 and u2 are the inverses of x mod y and y mod x
-        # TODO different way to express this so we don't check for x or y 1
-        assert y == 1 or gf_mod(gf_mul_noreduce(x, u1), y) == 1
-        assert x == 1 or gf_mod(gf_mul_noreduce(y, u2), x) == 1
-
-    return (u3, v2, v1, u1, u2)
-
 gf_extended_euclidean(gf_mul(GF_IRREDUCIBLES[10], GF_IRREDUCIBLES[20]), gf_mul(GF_IRREDUCIBLES[5], GF_IRREDUCIBLES[10]))
 gf_extended_euclidean(gf_mul(GF_IRREDUCIBLES[10], GF_IRREDUCIBLES[20]), gf_mul(GF_IRREDUCIBLES[5], GF_IRREDUCIBLES[15]))
-
-def gf_gcd_split(x, y):
-    return tuple(gf_extended_euclidean(x, y)[:3])
-
-def gf_gcd(x, y):
-    return gf_extended_euclidean(x, y)[0]
 
 def gf_formal_derivative(x):
     return (x >> 1) & MASK128_1
@@ -638,9 +531,6 @@ def gf_barret_reduction(x, u, u2):
     t = x ^ (gf_mul_noreduce(q, u) & ((1 << bits) - 1))
 
     return t
-
-def gf_deg(u):
-    return u.bit_length() - 1
 
 def gf_factor_canzass(u):
 
@@ -692,7 +582,7 @@ def gf_factor_berlekamp(u):
     x_factors = []
     while u & 1 == 0:
         u >>= 1
-        x_factors.append(0b10)
+        x_factors.append(GF_X)
 
     # make u square free
     (square, u, _) = gf_gcd_split(u, gf_formal_derivative(u))
@@ -829,6 +719,10 @@ def gf_factor_berlekamp(u):
         #     tmp = mat_mul([int_to_bitlist(v_i, n)], [int_to_bitlist(x, n) for x in Q])
         #     tmp = bitlist_to_int(tmp[0])
         #     assert tmp == 0
+
+    # show that each v_i is invariant under squaring mod u
+    for i, v_i in enumerate(v):
+        assert v_i == gf_mod(gf_square_noreduce(v_i), u)
 
     # print("Q:")
     # print('\n'.join(''.join(map(str, int_to_bitlist(r, n))) for r in Q))
@@ -1060,83 +954,6 @@ c = gf_pow(gg, 0x100000000)
 print(repr(gf_extended_euclidean(a, c)))
 print(repr(gf_extended_euclidean(b, c)))
 
-def gfmat_minus_identity(m):
-    m = m[:]
-    for i in range(len(m)):
-        m[i] ^= 1 << i
-    return m
-
-def gfmat_kernel(m):
-
-    # most of this was reused from gf_factor_berlekamp, just tidied up.
-    # could have rewritten that to use this function, but that would lose
-    # all the comments/asserts/exposition in that function only relevant
-    # to that specific use case.
-
-    # see "Algorithm N: Null space algorithm" TAOCP vol II 4.6.2 (p. 439)
-    # although variable names are different and a lot of stuff has been
-    # specialized / optimized for GF(2).
-
-    # we assume the matrix is n*n square. we can't really tell because python
-    # ints have no length independent of their value.
-    n = len(m)
-    m = m[:]
-
-    pivots = []
-    pivots_used = 0
-    kernel = []
-    for r in range(n):
-        mr = m[r]
-
-        # print(f"m[{r:3d}] = {''.join(map(str, int_to_bitlist(mr, n)))}")
-
-        # valid pivot columns must be set in mr and not have been used
-        available = mr & ~pivots_used
-
-        if available:
-            # just pick the first available one.
-            # I believe we have freedom to choose, except that the rationale
-            # for skipping the first (r - 1) rows in the next loop requires
-            # the criteria for selection to be consistent between rows.
-            # messing with the forward progress of the algorithm by changing
-            # previous rows like that is probably also a bad thing.
-            pc = count_trailing_zeros(available)
-
-            # zero out all the other columns in the current row, by adding
-            # (i.e. xor'ing) column pc to other columns which are 1 in mr.
-            # note that previous rows are 0 in column pc. so the operation
-            # would do nothing, and we can skip them.
-            for j in range(r, n):
-                if m[j] & (1 << pc):
-                    m[j] ^= mr ^ (1 << pc) # xor with mr-without-bit-pc
-
-            pivots_used |= 1 << pc
-            pivots.append(pc)
-        else:
-            k = 1 << r
-            assert len(pivots) == r
-            for pr, pc in enumerate(pivots):
-                if pc is not None and mr & (1 << pc):
-                    k |= 1 << pr
-            kernel.append(k)
-            pivots.append(None)
-
-        # loop invariant: for every row k in kernel, k * m == 0
-        # we can use a generic matmul even though we want binary matmul,
-        # because bitlist_to_int discards all but the low bit.
-        # for k in kernel:
-        #      tmp = mat_mul([int_to_bitlist(k, n)], [int_to_bitlist(mr, n) for mr in m])
-        #      tmp = bitlist_to_int(tmp[0])
-        #      assert tmp == 0
-
-    # for r, mr in enumerate(m):
-    #     print(f"m[{r:3d}] = {''.join(map(str, int_to_bitlist(mr, n)))}")
-
-    # for i, k in enumerate(kernel):
-    #     print(f"k[{i:3d}] = {''.join(map(str, int_to_bitlist(k, n)))}")
-
-    return kernel
-
 GF_BIT_POWERS = [
     [gf_pow(1 << b, 1 << (1 << e)) for b in range(128)]
     for e in range(8)
@@ -1165,19 +982,49 @@ if HAS_SAGE:
     A32 = A**32
     assert GF_BIT_POWERS[5] == [gf_from_sage_vector(v) for v in A32]
 
-    # GF_KERN = []
-    # for i in range(7):
-    #     m = SAGE_GFM128([gf_to_sage_vector(x) for x in GF_BIT_POWERS[i]])
+    GF_KERN = []
+    for i in range(7):
+        m = SAGE_GFM128([gf_to_sage_vector(x) for x in GF_BIT_POWERS[i]])
 
-    #     # sum with identity matrix and calculate the null space (aka kernel)
-    #     sage_kern = (m + SAGE_GFM128.identity_matrix()).kernel()
+        # sum with identity matrix and calculate the null space (aka kernel)
+        sage_kern = (m + SAGE_GFM128.identity_matrix()).kernel()
 
-    #     # get a random element and verify it is invariant under 2**i squarings
-    #     foo = gf_from_sage_vector(sage_kern.random_element())
-    #     assert foo == gf_pow(foo, 2**2**i)
+        # get a random element and verify it is invariant under 2**i squarings
+        foo = gf_from_sage_vector(sage_kern.random_element())
+        assert foo == gf_pow(foo, 2**2**i)
 
-    #     # use basis() as iterating it directly will give combinations of the basis
-    #     GF_KERN.append([gf_from_sage_vector(v) for v in sage_kern.basis()])
+        # use basis() as iterating it directly will give combinations of the basis
+        GF_KERN.append([gf_from_sage_vector(v) for v in sage_kern.basis()])
+
+    print("GF_KERN_SAGE = [")
+    for i in range(len(GF_KERN)):
+        print("    [")
+        print("        " + '\n        '.join(f"{x:#0130b}," for x in GF_KERN[i]))
+        print("    ],")
+    print("]")
+
+    for v in GF_KERN[3]:
+        acc = 0
+        tmp = 0
+        for w in GF_KERN[5]:
+            p = count_trailing_zeros(w)
+            tmp <<= 1
+            if v & (1 << p):
+                acc ^= w
+                tmp |= 1
+        assert acc == v
+        print(f"{tmp:0128b}")
+    for v in GF_KERN[3]:
+        acc = 0
+        tmp = 0
+        for w in GF_KERN[4]:
+            p = count_trailing_zeros(w)
+            tmp <<= 1
+            if v & (1 << p):
+                acc ^= w
+                tmp |= 1
+        assert acc == v
+        print(f"{tmp:0128b}")
 
 # calculate kernel entirely in python
 GF_KERN = []
@@ -1193,12 +1040,53 @@ print("]")
 
 foo = gf_random()
 acc = 0
-for j,x in enumerate(GF_KERN[5]):
+for x in GF_KERN[5]:
     p = x.bit_length() - 1
     if foo & (1 << p):
         acc ^= x
 assert acc == gf_pow(acc, 2**32)
 
+
+# stuff made from gf kern 5 squared is still made from gf kern 5
+# nothing noticeable in the bit pattern though
+for v in GF_KERN[5]:
+    squared = gf_square(v)
+    acc = 0
+    tmp = 0
+    for w in GF_KERN[5]:
+        p = w.bit_length() - 1
+        tmp <<= 1
+        if squared & (1 << p):
+            acc ^= w
+            tmp |= 1
+    assert acc == squared
+    print(bin(tmp))
+
+# stuff in gf kern 4 is made from stuff in gf kern 5
+for v in GF_KERN[4]:
+    acc = 0
+    tmp = 0
+    for w in GF_KERN[5]:
+        p = w.bit_length() - 1
+        tmp <<= 1
+        if v & (1 << p):
+            acc ^= w
+            tmp |= 1
+    assert acc == v
+    print(f"{tmp:0128b}")
+
+# stuff in gf kern 3 is made from stuff in gf kern 4
+for v in GF_KERN[3]:
+    acc = 0
+    tmp = 0
+    for w in GF_KERN[4]:
+        p = w.bit_length() - 1
+        tmp <<= 1
+        if v & (1 << p):
+            acc ^= w
+            tmp |= 1
+    assert acc == v
+    print(f"{tmp:0128b}")
 
 # wouldn't this be nice? but we can't distinguish squares in characteristic 2
 # (or rather, everything is a square)
@@ -1208,6 +1096,9 @@ assert acc == gf_pow(acc, 2**32)
 # note: this operation does not stay within a multiplicative group
 # also the property itself is additive, not multiplicative
 # https://kconrad.math.uconn.edu/blurbs/ugradnumthy/QRchar2.pdf
+# note that elsewhere, the set of polynomials invariant under squaring comes up.
+# such polynomials composed with x**2 + x are equal to zero.
+
 # apply x ** 2 + x to g**x:
 # g**(2x) + g**x
 # (g**x)**2 + g**(sqrt(x))**2
@@ -2318,7 +2209,7 @@ class AES_GCM:
 
     def __init__(self, key, iv):
         # basic aes encryption primitive, see _aes_ecb_encrypt
-        self._aes_ecb = Cipher(algorithms.AES(key), modes.ECB())
+        self._aes_ecb = Rijndael(key)
 
         # the secret used in the ghash function.
         self._auth_key = self._aes_ecb_encrypt(b'\x00' * 16)
@@ -2350,8 +2241,7 @@ class AES_GCM:
 
     def _aes_ecb_encrypt(self, data):
         assert len(data) == 16
-        encryptor = self._aes_ecb.encryptor()
-        return encryptor.update(data) + encryptor.finalize()
+        return self._aes_ecb.encrypt_block(data)
 
     def _keyblock(self, i):
         counter = self._init_counter + i
